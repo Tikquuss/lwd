@@ -32,7 +32,8 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 
 
-from utils import genData
+#from utils import genData
+from functions import genData
 
 # representation of real numbers in TF, change here for 32/64 bits
 real_type = tf.float32
@@ -534,7 +535,8 @@ def test(generator,
          testSeed=None, 
          weightSeed=None, 
          deltidx=0, 
-         generator_kwargs = {}):
+         generator_kwargs = {},
+         epochs=100):
 
     # simulation
     print("simulating training, valid and test sets")
@@ -569,7 +571,7 @@ def test(generator,
         regressor.prepare(m = size, differential= False, weight_seed = weightSeed, **generator_kwargs)
             
         t0 = time.time()
-        regressor.train("standard training")
+        regressor.train("standard training", epochs=epochs)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("standard", size)] = predictions
         preddeltas[("standard", size)] = deltas[:, deltidx]
@@ -581,7 +583,7 @@ def test(generator,
         regressor.prepare(m = size, differential = True, weight_seed = weightSeed, **generator_kwargs)
             
         t0 = time.time()
-        regressor.train("differential training")
+        regressor.train("differential training", epochs=epochs)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("differential", size)] = predictions
         preddeltas[("differential", size)] = deltas[:, deltidx]
@@ -875,10 +877,18 @@ def get_diffML_data_loader(generator, nTrain, nTest, train_seed, test_seed, batc
     xTrain, yTrain, dydxTrain = generator.trainingSet(nTrain, seed = train_seed)
     xTest, xAxis, yTest, dydxTest, vegas = generator.testSet(num = nTest, seed = test_seed)
 
+    _, n = xTrain.shape
     if normalize :
         x_mean, x_std, xTrain, y_mean, y_std, yTrain, dydxTrain, lambda_j = normalize_data(xTrain, yTrain, dydxTrain, nTrain)
-        _, n = xTrain.shape
         config = {"x_mean" : x_mean[0], "x_std" : x_std[0], "y_mean" : y_mean[0], "y_std" : y_std[0], "lambda_j" : lambda_j, "n" : n}
+        def get_alpha_beta (lam) :
+            alpha = 1.0 / (1.0 + lam * n)
+            return alpha, 1.0 - alpha
+
+        config["get_alpha_beta"] = get_alpha_beta 
+    else :
+        config = {"x_mean" : 0.0, "x_std" : 1.0, "y_mean" : 0.0, "y_std" : 1.0, "lambda_j" : 1.0, "n" : n}
+        config["get_alpha_beta"] = lambda lam :  (1.0, 1.0)
     
     tensor_xTrain, tensor_yTrain = torch.FloatTensor(xTrain) , torch.FloatTensor(yTrain)
     tensor_xTest, tensor_yTest = torch.FloatTensor(xTest), torch.FloatTensor(yTest) 
@@ -895,7 +905,6 @@ def get_diffML_data_loader(generator, nTrain, nTest, train_seed, test_seed, batc
     train_dataloader = DataLoader(train_dataset, batch_size = batch_size) 
     test_dataloader = DataLoader(test_dataset, batch_size = batch_size) 
 
-    if normalize :
-        return train_dataloader, test_dataloader, xAxis, vegas, config
-    else :
-        return train_dataloader, test_dataloader, xAxis, vegas
+    return train_dataloader, test_dataloader, xAxis, vegas, config
+    
+    

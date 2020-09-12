@@ -3,11 +3,20 @@
 
 import torch
 from torch import nn
+from tqdm import tqdm_notebook
 
 import numpy as np
 import os
 
 from utils import gradient
+
+"""
+def gradient(y, x, grad_outputs=None):
+    if grad_outputs is None:
+        grad_outputs = torch.ones_like(y)
+    grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
+    return grad
+"""
 
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, bias = True, omega_0 = 1, activation_function = None, deriv_activation_function = None):
@@ -26,7 +35,7 @@ class Linear(nn.Module):
 class SineLayer(Linear):
     def __init__(self, in_features, out_features, bias = True, is_first = False, is_last = False, omega_0 = 30):
         
-        if is_last :
+        if is_first :
             activation_function = None
             deriv_activation_function = None
         else :
@@ -65,7 +74,10 @@ class Siren(nn.Module):
             self.net.append(SineLayer(hidden_features, hidden_features, omega_0 = hidden_omega_0))
 
         if outermost_linear:
-            final_linear = Linear(hidden_features, out_features, omega_0 = 1)
+            final_linear = Linear(hidden_features, out_features, omega_0 = 1,
+                                  activation_function = torch.sin,
+                                  deriv_activation_function = torch.cos
+                                  )
             
             with torch.no_grad():
                 final_linear.linear.weight.uniform_(-np.sqrt(6 / hidden_features) / hidden_omega_0, 
@@ -129,14 +141,19 @@ class MLP(nn.Module):
         self.net = []
 
         # input layer
-        self.net.append(Linear(in_features, hidden_features, activation_function, deriv_activation_function = deriv_activation_function))
+        self.net.append(Linear(in_features, hidden_features, activation_function = None, 
+                                deriv_activation_function = None))
     
         # hidden layer(s)
         for i in range(hidden_layers):
-            self.net.append(Linear(hidden_features, hidden_features, activation_function, deriv_activation_function = deriv_activation_function))
+            self.net.append(Linear(hidden_features, hidden_features, 
+                                   activation_function = activation_function, 
+                                   deriv_activation_function = deriv_activation_function))
 
         # output layer
-        self.net.append(Linear(hidden_features, out_features,))
+        self.net.append(Linear(hidden_features, out_features, 
+                               activation_function = activation_function, 
+                               deriv_activation_function = deriv_activation_function))
 
         self.net = nn.Sequential(*self.net)
 
@@ -150,7 +167,7 @@ class MLP(nn.Module):
             return y, x_grad
         else :
             zs = []
-            x_grad = x.clone().detach().requires_grad_(True) # allows to take derivative w.r.t. input
+            #x_grad = x.clone().detach().requires_grad_(True) # allows to take derivative w.r.t. input
             for linear_layer in self.net :
                  x, z = linear_layer(x)
                  zs.append(z)
@@ -192,10 +209,15 @@ class TwinNet():
 
     def train(self, dataloader, config, lam = 1,  with_derivative = False, max_epoch = 20, improving_limit = 10, metric = "train_loss"):
 
+        learning_rate_schedule = config["learning_rate_schedule"]
+        description = config["description"]
+        lr_schedule_epochs, lr_schedule_rates = zip(*learning_rate_schedule)
+
         x_std, y_mean, y_std = config["x_std"], config["y_mean"], config["y_std"]
         lambda_j = config["lambda_j"]
-        alpha = 1.0 / (1.0 + lam * config["n"])
-        beta = 1.0 - alpha
+        #alpha = 1.0 / (1.0 + lam * config["n"])
+        #beta = 1.0 - alpha
+        alpha, beta = config["get_alpha_beta"](lam) 
 
         assert dataloader
 
@@ -218,11 +240,17 @@ class TwinNet():
             stats['train_loss'] = []
             stats['train_yloss'] = []
             stats['train_dyloss'] = []
-
-            for epoch in range(max_epoch):
+            
+            for epoch in tqdm_notebook(range(max_epoch), desc=description):
+                # interpolate learning rate in cycle
+                learning_rate = np.interp(epoch / max_epoch, lr_schedule_epochs, lr_schedule_rates)
+                self.optimizer.lr = learning_rate
 
                 running_loss = 0
                 r_y, r_dy = 0, 0
+
+                running_loss_no_scaled = 0
+                r_y_no_scaled, r_dy_no_scaled = 0, 0
 
                 for batch in dataloader:
                   
@@ -237,25 +265,35 @@ class TwinNet():
                     dy_pred = self.model.backprop(y_pred, zs) 
 
                     # Compute Loss
-                    #y_pred = y_mean + y_std * y_pred
-                    #dy_pred = y_std / x_std *  dy_pred
-
                     l_y = self.criterion(y_pred.squeeze(), y)
                     l_dy = self.criterion(dy * lambda_j, dy_pred * lambda_j)
-
                     loss = alpha * l_y + beta * l_dy
                     
                     running_loss += loss.item()
                     r_y += l_y.item()
                     r_dy += l_dy.item()
                     
+                    y_pred = y_mean + y_std * y_pred
+                    dy_pred = y_std / x_std *  dy_pred
+                    y = y_mean + y_std * y
+                    dy = y_std / x_std *  dy
+                    l_y_no_scaled = self.criterion(y_pred.squeeze(), y)
+                    l_dy_no_scaled = self.criterion(dy , dy_pred)
+                    r_y_no_scaled += l_y_no_scaled.item()
+                    r_dy_no_scaled += l_dy_no_scaled.item()
+                    running_loss_no_scaled += l_y_no_scaled.item() + l_dy_no_scaled.item()
+
                     # Backward pass
                     loss.backward()
                     self.optimizer.step()
 
+
                 running_loss = running_loss/len_dl
                 r_y = r_y/len_dl
                 r_dy = r_dy/len_dl
+                r_y_no_scaled = r_y_no_scaled / len_dl
+                r_dy_no_scaled = r_dy_no_scaled / len_dl
+                running_loss_no_scaled = running_loss_no_scaled / len_dl
 
                 stats['train_loss'].append(running_loss)
                 stats['train_yloss'].append(r_y)
@@ -269,6 +307,9 @@ class TwinNet():
                     counter += 1
                 
                 print('Epoch {}: train loss: {}, y loss : {}, dy loss : {}'.format(epoch, running_loss, r_y, r_dy))
+                print('train loss no scaled: {}, y loss  no scaled : {}, dy loss  no scaled: {}'.format(
+                        running_loss_no_scaled, r_y_no_scaled, r_dy_no_scaled
+                  ))
 
                 if  counter == improving_limit + 1:
                     break
@@ -276,10 +317,14 @@ class TwinNet():
         else :
             stats['train_loss'] = []
 
-            for epoch in range(max_epoch):
+            for epoch in tqdm_notebook(range(max_epoch), desc=description):
+                # interpolate learning rate in cycle
+                learning_rate = np.interp(epoch / max_epoch, lr_schedule_epochs, lr_schedule_rates)
+                self.optimizer.lr = learning_rate
                 
                 running_loss = 0
-                
+                running_loss_no_scaled = 0
+
                 for batch in dataloader:
                   
                     x, y = batch
@@ -292,14 +337,19 @@ class TwinNet():
                     # Compute Loss
                     #y_pred = y_mean + y_std * y_pred
                     loss = self.criterion(y_pred.squeeze(), y)
-                    
                     running_loss += loss.item()
+
+                    y_pred = y_mean + y_std * y_pred
+                    y = y_mean + y_std * y
+                    loss_no_scaled = self.criterion(y_pred.squeeze(), y)
+                    running_loss_no_scaled += loss_no_scaled.item()
                     
                     # Backward pass
                     loss.backward()
                     self.optimizer.step()
                 
                 running_loss = running_loss/len_dl
+                running_loss_no_scaled = running_loss_no_scaled/len_dl
 
                 stats[metric].append(running_loss)
 
@@ -310,7 +360,7 @@ class TwinNet():
                 else :
                     counter += 1
                 
-                print('Epoch {}: train loss: {}'.format(epoch, running_loss))
+                print('Epoch {}: train loss: {} train loss no scaled: {}'.format(epoch, running_loss, running_loss_no_scaled))
 
                 if  counter == improving_limit + 1 :
                     break
@@ -324,8 +374,10 @@ class TwinNet():
     def test(self, dataloader, config, lam = 1, with_derivative = False):
         
         lambda_j = config["lambda_j"]
-        alpha = 1.0 / (1.0 + lam * config["n"])
-        beta = 1.0 - alpha
+        #alpha = 1.0 / (1.0 + lam * config["n"])
+        #beta = 1.0 - alpha
+        alpha, beta = config["get_alpha_beta"](lam) 
+
         x_mean, x_std, y_mean, y_std = config["x_mean"], config["x_std"], config["y_mean"], config["y_std"]
 
         assert dataloader
@@ -337,6 +389,7 @@ class TwinNet():
 
         if with_derivative :
             running_loss, r_y, r_dy = 0, 0, 0
+            running_loss_no_scaled, r_y_no_scaled, r_dy_no_scaled = 0, 0, 0
 
             y_list = []
             dy_list = []
@@ -371,6 +424,14 @@ class TwinNet():
                 r_y += l_y.item()
                 r_dy += l_dy.item()
                 
+                ######
+                l_y_no_scaled = self.criterion(y_pred.squeeze(), y)
+                l_dy_no_scaled = self.criterion(dy , dy_pred)
+                r_y_no_scaled += l_y_no_scaled.item()
+                r_dy_no_scaled += l_dy_no_scaled.item()
+                running_loss_no_scaled += l_y_no_scaled.item() + l_dy_no_scaled.item()
+                ######
+
                 y_list.append(y)
                 dy_list.append(dy)
                 y_pred_list.append(y_pred)
@@ -379,14 +440,22 @@ class TwinNet():
             running_loss = running_loss/len_dl
             r_y = r_y/len_dl
             r_dy = r_dy/len_dl
-                
+            r_y_no_scaled = r_y_no_scaled / len_dl
+            r_dy_no_scaled = r_dy_no_scaled / len_dl
+            running_loss_no_scaled = running_loss_no_scaled / len_dl
+
             print('test loss: {}, y loss : {}, dy loss : {}'.format(running_loss, r_y, r_dy))
+            print('test loss no scaled: {}, y loss  no scaled : {}, dy loss  no scaled: {}'.format(
+                running_loss_no_scaled, r_y_no_scaled, r_dy_no_scaled
+            ))
 
             return running_loss, r_y, r_dy, (y_list, dy_list, y_pred_list, dy_pred_list)
 
         else :
       
             running_loss = 0
+            running_loss_no_scaled = 0
+
             y_list = []
             y_pred_list = []
           
@@ -407,23 +476,33 @@ class TwinNet():
                     
                 running_loss += loss.item()
 
+                ########
+                loss_no_scaled = self.criterion(y_pred.squeeze(), y)
+                running_loss_no_scaled += loss_no_scaled.item()
+                ########
+
                 y_list.append(y)
                 y_pred_list.append(y_pred)
                     
             running_loss = running_loss/len_dl
+            running_loss_no_scaled = running_loss_no_scaled / len_dl
 
-            print('test loss: {}'.format(running_loss))
+            print('test loss: {} test loss no scaled {}'.format(running_loss, running_loss_no_scaled))
 
             return running_loss, (y_list, y_pred_list)
 
 
 def train(model, dataloader, optimizer, criterion, config, lam = 1, with_derivative = False, max_epoch = 20, improving_limit = 10, metric = "train_loss"):
     
+    learning_rate_schedule = config["learning_rate_schedule"]
+    description = config["description"]
+    lr_schedule_epochs, lr_schedule_rates = zip(*learning_rate_schedule)
+
     x_std, y_mean, y_std = config["x_std"], config["y_mean"], config["y_std"]
     lambda_j = config["lambda_j"]
-    alpha = 1.0 / (1.0 + lam * config["n"])
-    beta = 1.0 - alpha
-
+    #alpha = 1.0 / (1.0 + lam * config["n"])
+    #beta = 1.0 - alpha
+    alpha, beta = config["get_alpha_beta"](lam) 
 
     assert all([model, dataloader, criterion])
 
@@ -447,11 +526,17 @@ def train(model, dataloader, optimizer, criterion, config, lam = 1, with_derivat
         stats['train_yloss'] = []
         stats['train_dyloss'] = []
 
-        for epoch in range(max_epoch):
+        for epoch in tqdm_notebook(range(max_epoch), desc=description):
+            # interpolate learning rate in cycle
+            learning_rate = np.interp(epoch / max_epoch, lr_schedule_epochs, lr_schedule_rates)
+            optimizer.lr = learning_rate
 
             running_loss = 0
             r_y, r_dy = 0, 0
 
+            running_loss_no_scaled = 0
+            r_y_no_scaled, r_dy_no_scaled = 0, 0
+              
             for batch in dataloader:
               
                 x, y, dy = batch
@@ -465,8 +550,6 @@ def train(model, dataloader, optimizer, criterion, config, lam = 1, with_derivat
                 dy_pred = gradient(y_pred, x)
 
                 # Compute Loss
-                #y_pred = y_mean + y_std * y_pred
-                #dy_pred = y_std / x_std *  dy_pred
                 l_y = criterion(y_pred.squeeze(), y)
                 l_dy = criterion(dy * lambda_j, dy_pred.detach() * lambda_j)
 
@@ -475,6 +558,16 @@ def train(model, dataloader, optimizer, criterion, config, lam = 1, with_derivat
                 running_loss += loss.item()
                 r_y += l_y.item()
                 r_dy += l_dy.item()
+
+                y_pred = y_mean + y_std * y_pred
+                dy_pred = y_std / x_std *  dy_pred
+                y = y_mean + y_std * y
+                dy = y_std / x_std *  dy
+                l_y_no_scaled = criterion(y_pred.squeeze(), y)
+                l_dy_no_scaled = criterion(dy , dy_pred)
+                r_y_no_scaled += l_y_no_scaled.item()
+                r_dy_no_scaled += l_dy_no_scaled.item()
+                running_loss_no_scaled += l_y_no_scaled.item() + l_dy_no_scaled.item()
                 
                 # Backward pass
                 loss.backward()
@@ -483,6 +576,9 @@ def train(model, dataloader, optimizer, criterion, config, lam = 1, with_derivat
             running_loss = running_loss/len_dl
             r_y = r_y/len_dl
             r_dy = r_dy/len_dl
+            running_loss_no_scaled = running_loss_no_scaled
+            r_y_no_scaled = r_y_no_scaled/len_dl
+            r_dy_no_scaled = r_dy_no_scaled/len_dl
 
             stats['train_loss'].append(running_loss)
             stats['train_yloss'].append(r_y)
@@ -496,17 +592,24 @@ def train(model, dataloader, optimizer, criterion, config, lam = 1, with_derivat
                 counter += 1
             
             print('Epoch {}: train loss: {}, y loss : {}, dy loss : {}'.format(epoch, running_loss, r_y, r_dy))
-
+            print('train loss no scaled: {}, y loss  no scaled : {}, dy loss  no scaled: {}'.format(
+                  running_loss_no_scaled, r_y_no_scaled, r_dy_no_scaled
+            ))
+            
             if  counter == improving_limit + 1:
                 break
 
     else :
         stats['train_loss'] = []
 
-        for epoch in range(max_epoch):
+        for epoch in tqdm_notebook(range(max_epoch), desc=description):
+            # interpolate learning rate in cycle
+            learning_rate = np.interp(epoch / max_epoch, lr_schedule_epochs, lr_schedule_rates)
+            optimizer.lr = learning_rate
             
             running_loss = 0
-            
+            running_loss_no_scaled = 0
+
             for batch in dataloader:
               
                 x, y = batch
@@ -521,12 +624,18 @@ def train(model, dataloader, optimizer, criterion, config, lam = 1, with_derivat
                 loss = criterion(y_pred.squeeze(), y)
                 
                 running_loss += loss.item()
+
+                y_pred = y_mean + y_std * y_pred
+                y = y_mean + y_std * y
+                loss_no_scaled = criterion(y_pred.squeeze(), y)
+                running_loss_no_scaled += loss_no_scaled.item()
                 
                 # Backward pass
                 loss.backward()
                 optimizer.step()
             
             running_loss = running_loss/len_dl
+            running_loss_no_scaled = running_loss_no_scaled/len_dl
 
             stats[metric].append(running_loss)
 
@@ -537,7 +646,7 @@ def train(model, dataloader, optimizer, criterion, config, lam = 1, with_derivat
             else :
                 counter += 1
             
-            print('Epoch {}: train loss: {}'.format(epoch, running_loss))
+            print('Epoch {}: train loss: {} train loss no scaled: {}'.format(epoch, running_loss, running_loss_no_scaled))
 
             if  counter == improving_limit + 1 :
                 break
@@ -549,9 +658,11 @@ def train(model, dataloader, optimizer, criterion, config, lam = 1, with_derivat
     return model, stats, best_loss
     
 def test(model, dataloader, criterion, config, lam = 1, with_derivative = False):
+
     lambda_j = config["lambda_j"]
-    alpha = 1.0 / (1.0 + lam * config["n"])
-    beta = 1.0 - alpha
+    #alpha = 1.0 / (1.0 + lam * config["n"])
+    #beta = 1.0 - alpha
+    alpha, beta = config["get_alpha_beta"](lam) 
     x_mean, x_std, y_mean, y_std = config["x_mean"], config["x_std"], config["y_mean"], config["y_std"]
 
     assert all([model, dataloader, criterion])
@@ -566,6 +677,7 @@ def test(model, dataloader, criterion, config, lam = 1, with_derivative = False)
 
     if with_derivative :
         running_loss, r_y, r_dy = 0, 0, 0
+        running_loss_no_scaled, r_y_no_scaled, r_dy_no_scaled = 0, 0, 0
 
         y_list = []
         dy_list = []
@@ -597,6 +709,14 @@ def test(model, dataloader, criterion, config, lam = 1, with_derivative = False)
             running_loss += loss.item()
             r_y += l_y.item()
             r_dy += l_dy.item()
+
+            #########
+            l_y_no_scaled = criterion(y_pred.squeeze(), y)
+            l_dy_no_scaled = criterion(dy , dy_pred)
+            r_y_no_scaled += l_y_no_scaled.item()
+            r_dy_no_scaled += l_dy_no_scaled.item()
+            running_loss_no_scaled += l_y_no_scaled.item() + l_dy_no_scaled.item()
+            ##########
             
             y_list.append(y)
             dy_list.append(dy)
@@ -606,14 +726,23 @@ def test(model, dataloader, criterion, config, lam = 1, with_derivative = False)
         running_loss = running_loss/len_dl
         r_y = r_y/len_dl
         r_dy = r_dy/len_dl
+
+        r_y_no_scaled = r_y_no_scaled / len_dl
+        r_dy_no_scaled = r_dy_no_scaled / len_dl
+        running_loss_no_scaled = running_loss_no_scaled / len_dl
             
         print('test loss: {}, y loss : {}, dy loss : {}'.format(running_loss, r_y, r_dy))
+        print('test loss no scaled: {}, y loss  no scaled : {}, dy loss  no scaled: {}'.format(
+            running_loss_no_scaled, r_y_no_scaled, r_dy_no_scaled
+        ))
 
         return running_loss, r_y, r_dy, (y_list, dy_list, y_pred_list, dy_pred_list)
 
     else :
   
         running_loss = 0
+        running_loss_no_scaled = 0
+
         y_list = []
         y_pred_list = []
       
@@ -633,11 +762,17 @@ def test(model, dataloader, criterion, config, lam = 1, with_derivative = False)
                 
             running_loss += loss.item()
 
+            #########
+            loss_no_scaled = criterion(y_pred.squeeze(), y)
+            running_loss_no_scaled += loss_no_scaled.item()
+            #########
+
             y_list.append(y)
             y_pred_list.append(y_pred)
                 
         running_loss = running_loss/len_dl
+        running_loss_no_scaled = running_loss_no_scaled/len_dl
 
-        print('test loss: {}'.format(running_loss))
+        print('test loss: {} test loss no scaled {}'.format(running_loss, running_loss_no_scaled))
 
         return running_loss, (y_list, y_pred_list)

@@ -8,6 +8,8 @@ from matplotlib import cm
 import random
 import os 
 
+from diff_ml_utils import normalize_data
+
 def gradient(y, x, grad_outputs=None):
     if grad_outputs is None:
         grad_outputs = torch.ones_like(y)
@@ -100,22 +102,54 @@ def plotGrad(name, deriv_function = None, model = None,
     dz = plt.quiver(x, y, z[:, :, 0], z[:, :, 1])
     plt.show()
 
+def get_data_loader(x, y, dydx = None, batch_size = 32, normalize = False):
 
-def get_data_loader(x, y, dydx = None, batch_size = 32):
+    if not normalize :
   
-    tensor_x = torch.FloatTensor(x)  
-    tensor_y = torch.FloatTensor(y)
+        tensor_x = torch.FloatTensor(x)  
+        tensor_y = torch.FloatTensor(y)
 
-    if dydx : 
-        tensor_dydx = torch.FloatTensor(dydx)
-        dataset = TensorDataset(tensor_x, tensor_y, tensor_dydx)
+        try : 
+            if dydx: 
+                tensor_dydx = torch.FloatTensor(dydx)
+                dataset = TensorDataset(tensor_x, tensor_y, tensor_dydx)
+            else :
+                dataset = TensorDataset(tensor_x, tensor_y)
+        except ValueError :
+            if dydx.all(): 
+                tensor_dydx = torch.FloatTensor(dydx)
+                dataset = TensorDataset(tensor_x, tensor_y, tensor_dydx)
+            else :
+                dataset = TensorDataset(tensor_x, tensor_y)
+
+        dataloader = DataLoader(dataset, batch_size = batch_size) 
+
+        _, n = np.array(x).shape
+        config = {"x_mean" : 0.0, "x_std" : 1.0, "y_mean" : 0.0, "y_std" : 1.0, "lambda_j" : 1.0, "n" : n}
+        config["get_alpha_beta"] = lambda lam : (1.0, 1.0)
+        
+        return dataloader, config
+        
     else :
-        dataset = TensorDataset(tensor_x, tensor_y)
+        m = len(x)
+        x = np.array(x)
+        y = np.array(y)
+        dydx = np.array(dydx) if dydx else None
 
-    dataloader = DataLoader(dataset, batch_size = batch_size) 
+        _, n = x.shape
+        
+        x_mean, x_std, x, y_mean, y_std, y, dydx, lambda_j = normalize_data(x, y, dydx, m)
+        config = {"x_mean" : x_mean, "x_std" : x_std, "y_mean" : y_mean, "y_std" : y_std, "lambda_j" : lambda_j, "n" : n}
+        def get_alpha_beta(lam) :
+            alpha = 1.0 / (1.0 + lam * n)
+            return alpha, 1.0 - alpha
 
-    return dataloader
+        config["get_alpha_beta"] = get_alpha_beta 
 
+        dataloader, _ = get_data_loader(x, y, dydx, batch_size, normalize = False)
+
+        return dataloader, config
+            
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, bias=True, is_last = False):
         super().__init__()
