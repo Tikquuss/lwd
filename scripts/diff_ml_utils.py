@@ -249,7 +249,8 @@ def train(description,
           min_batch_size=256,
           # callback function and when to call it
           callback=None,           # arbitrary callable
-          callback_epochs=[]):     # call after what epochs, e.g. [5, 20]
+          callback_epochs=[],      # call after what epochs, e.g. [5, 20]
+          improving_limit = 100):     
               
     # batching
     batch_size = max(min_batch_size, approximator.m // batches_per_epoch)
@@ -264,7 +265,16 @@ def train(description,
     # callback on epoch 0, if requested
     if callback and 0 in callback_epochs:
         callback(approximator, 0)
-        
+    
+    #import pickle
+    #import copy
+    #tmp_best_model_path = './best-model-tmp.h5'
+    stats = {}
+    stats['train_yloss'] = []
+    stats['train_dyloss'] = []
+    best_loss = float('inf')
+    counter = 1
+
     # loop on epochs, with progress bar (tqdm)
     for epoch in tqdm_notebook(range(epochs), desc=description):
         
@@ -305,9 +315,40 @@ def train(description,
         if callback and epoch in callback_epochs:
             callback(approximator, epoch)
 
+        with tf.Session() as sess:
+            predictions, deltas = approximator.predict_values_and_derivs(approximator.x)
+            
+            loss = sess.run([
+                             tf.losses.mean_squared_error(approximator.y, predictions), 
+                             tf.losses.mean_squared_error(approximator.dy_dx, deltas)]
+                            )
+            print('Epoch {}: y loss : {}, dy loss : {}'.format(epoch, loss[0], loss[1]))
+            stats['train_yloss'].append(loss[0])
+            stats['train_dyloss'].append(loss[1])
+
+            if loss[0] < best_loss :
+                best_loss = loss[0]
+                counter = 1
+                #a = approximator.session
+                #approximator.session = None
+                #pickle.dump(approximator, open(tmp_best_model_path, 'wb'))
+                #torch.save(approximator, tmp_best_model_path)
+                #a = copy.deepcopy(approximator)
+                #approximator.session = a
+            else :
+                counter += 1
+
+            if counter == improving_limit + 1:
+                break
+
     # final callback, if requested
     if callback and epochs in callback_epochs:
-        callback(approximator, epochs)        
+        callback(approximator, epochs)     
+
+    #approximator = pickle.load(open(tmp_best_model_path, 'rb'))
+    #approximator = torch.load(tmp_best_model_path)
+
+    return stats
 
 ## Data normalization
 # basic data preparation
@@ -351,7 +392,9 @@ class Neural_Approximator():
         # tensorflow logic
         self.graph = None
         self.session = None
-                        
+        
+        self.stats = {}
+
     def __del__(self):
         if self.session is not None:
             self.session.close()
@@ -449,9 +492,11 @@ class Neural_Approximator():
               # callback and when to call it
               # we don't use callbacks, but this is very useful, e.g. for debugging
               callback=None,           # arbitrary callable
-              callback_epochs=[]):     # call after what epochs, e.g. [5, 20]
+              callback_epochs=[],     # call after what epochs, e.g. [5, 20]
+              improving_limit = 100):     
               
-        train(description, 
+        self.stats['differential' if self.differential else "normal"]  = train(
+              description, 
               self, 
               reinit, 
               epochs, 
@@ -459,7 +504,8 @@ class Neural_Approximator():
               batches_per_epoch, 
               min_batch_size,
               callback, 
-              callback_epochs)
+              callback_epochs,
+              improving_limit)
         
     def predict_values(self, x):
         # scale
@@ -536,7 +582,8 @@ def test(generator,
          weightSeed=None, 
          deltidx=0, 
          generator_kwargs = {},
-         epochs=100):
+         epochs=100,
+         improving_limit = 100):
 
     # simulation
     print("simulating training, valid and test sets")
@@ -571,48 +618,37 @@ def test(generator,
         regressor.prepare(m = size, differential= False, weight_seed = weightSeed, **generator_kwargs)
             
         t0 = time.time()
-        regressor.train("standard training", epochs=epochs)
+        regressor.train("standard training", epochs=epochs, improving_limit = improving_limit)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("standard", size)] = predictions
         preddeltas[("standard", size)] = deltas[:, deltidx]
         t1 = time.time()
-        a, b = loss_function(yTest, predictions), loss_function(dydxTest, deltas)
-        dic_loss['standard_loss']["yloss"].append(a)
-        dic_loss['standard_loss']["dyloss"].append(b)
+
+        with tf.Session() as sess:
+            loss = sess.run([loss_function(yTest, predictions), loss_function(dydxTest, deltas)])
+            print('test y loss : {}, test dy loss : {}'.format(loss[0], loss[1]))
+            dic_loss['standard_loss']["yloss"].append(loss[0])
+            dic_loss['standard_loss']["dyloss"].append(loss[1])
 
         regressor.prepare(m = size, differential = True, weight_seed = weightSeed, **generator_kwargs)
             
         t0 = time.time()
-        regressor.train("differential training", epochs=epochs)
+        regressor.train("differential training", epochs=epochs, improving_limit = improving_limit)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("differential", size)] = predictions
         preddeltas[("differential", size)] = deltas[:, deltidx]
         t1 = time.time()
-        c, d = loss_function(yTest, predictions), loss_function(dydxTest, deltas)
-        dic_loss['differential_loss']["yloss"].append(c)
-        dic_loss['differential_loss']["dyloss"].append(d)
-
-        with tf.Session() as sess:
-            loss = sess.run([a, b, c, d])
-            print("standard_yloss : " + str(loss[0]))
-            print("standard_dyloss : " + str(loss[1]))
-            print("differential_yloss : " + str(loss[2]))
-            print("differential_dyloss : " + str(loss[3]))
     
-    loss = None
-    with tf.Session() as sess:
-        loss = sess.run([
-              dic_loss['standard_loss']["yloss"],
-              dic_loss['standard_loss']["dyloss"],
-              dic_loss['differential_loss']["yloss"], 
-              dic_loss['differential_loss']["dyloss"]
-        ])
-        print(loss)
+        with tf.Session() as sess:
+            loss = sess.run([loss_function(yTest, predictions), loss_function(dydxTest, deltas)])
+            print('test y loss : {}, test dy loss : {}'.format(loss[0], loss[1]))
+            dic_loss['differential_loss']["yloss"].append(loss[0])
+            dic_loss['differential_loss']["dyloss"].append(loss[1])
 
     if xAxis.all() :
-        return loss, regressor, (xTrain, yTrain, dydxTrain), (xTest, yTest, dydxTest), dydxTest[:, deltidx], predvalues, preddeltas, xAxis, vegas
+        return dic_loss, regressor, (xTrain, yTrain, dydxTrain), (xTest, yTest, dydxTest), dydxTest[:, deltidx], predvalues, preddeltas, xAxis, vegas
     else :
-        return loss, regressor, (xTrain, yTrain, dydxTrain), (xTest, yTest, dydxTest), dydxTest[:, deltidx], predvalues, preddeltas
+        return dic_loss, regressor, (xTrain, yTrain, dydxTrain), (xTest, yTest, dydxTest), dydxTest[:, deltidx], predvalues, preddeltas
      
 
 def graph(title, 

@@ -288,7 +288,11 @@ class Siren(nn.Module):
 
         return activations
 
-def train(model, dataloader, optimizer, criterion, with_derivative = False, max_epoch = 20, improving_limit = 10, metric = "train_loss"):
+def train(model, dataloader, optimizer, criterion, config = {'alpha':1, "beta" : 1}, 
+          with_derivative = False, max_epoch = 20, improving_limit = 10, metric = "train_loss"):
+
+    alpha = config["alpha"]
+    beta = config["beta"]
     
     assert all([model, dataloader, criterion])
 
@@ -333,9 +337,9 @@ def train(model, dataloader, optimizer, criterion, with_derivative = False, max_
                 l_y = criterion(y_pred.squeeze(), y)
                 l_dy = criterion(dy, dy_pred)
 
-                loss = l_y + l_dy
+                loss = alpha * l_y + beta * l_dy
                 
-                running_loss += loss.item()
+                running_loss += (l_y + l_dy).item()
                 r_y += l_y.item()
                 r_dy += l_dy.item()
                 
