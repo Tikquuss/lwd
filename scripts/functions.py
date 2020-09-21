@@ -3,19 +3,6 @@ import math
 import numpy as np
 import random
 
-def genData(function, deriv_function, min_x, max_x, num_samples):
-    fnd1 = deriv_function(index = 0)
-    fnd2 = deriv_function(index = 1)
-    samples = []
-    for n in range(num_samples):
-        x = np.array([random.uniform(min_x, max_x) for i in range(2)])
-        y = function(x)
-        dy1 = fnd1(x)
-        dy2 = fnd2(x)
-        dy = np.array([dy1, dy2])
-        s = (x, y, dy)
-        samples.append(s)
-    return samples
 
 # 1) Styblinski-Tang function : https://www.sfu.ca/~ssurjano/stybtang.html 
 
