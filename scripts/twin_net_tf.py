@@ -493,7 +493,7 @@ class Neural_Approximator():
               # we don't use callbacks, but this is very useful, e.g. for debugging
               callback=None,           # arbitrary callable
               callback_epochs=[],     # call after what epochs, e.g. [5, 20]
-              improving_limit = 100):     
+              improving_limit =  float("inf")):     
               
         self.stats['differential' if self.differential else "normal"]  = train(
               description, 
@@ -583,7 +583,7 @@ def test(generator,
          deltidx=0, 
          generator_kwargs = {},
          epochs=100,
-         improving_limit = 100):
+         improving_limit = float("inf")):
 
     # simulation
     print("simulating training, valid and test sets")
