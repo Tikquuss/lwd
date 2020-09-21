@@ -23,7 +23,7 @@ To summarize, you have the possibility to form a network following one of these 
 * Twin_net tensorflow (x, y, dy/dx) : with MLP and Siren
 * Twin_net pytorch (x, y, dy/dx) : with MLP and Siren
 
-# **How to train a model using our achitercture?**
+# **How to train your one model?**
 ```
 git clone https://github.com/Tikquuss/lwd
 cd lwd/scripts
@@ -34,11 +34,12 @@ cd lwd/scripts
 
 The genData function takes a :
 * function : f(x : array), return y 
-* its derivative: f'(i: int), returns another function that takes x and returns df/dx[i].
+* its derivative: f'(i: int), takes i as parameter and returns another function that takes x and returns df(x)/dx[i]=dy/dx[i].
+* dim_x : dimension of x
 * the boundaries of the domain in which the points will be generated unify the points
 * and the number of examples (n) to be generated
 
-and returns (xi, yi, [dydx[j], j=1...m]), i = 1….n
+and returns (xi, yi, [dydx[j], j=1...dim_x]), i = 1….n
 
 **Example with the Styblinski-Tang function**
 ```
@@ -50,14 +51,15 @@ batch_size = 32
 normalize = False # whether you want to normalize the data or not.
 nTrain = number of examples to be generated for training
 nTest = number of examples to be generated for the test
+INPUT_DIM = 2
 
-batch_samples = genData(function = STFunction, deriv_function = STDeriv, min_x = min_x, max_x = max_x, num_samples = nTrain)
+batch_samples = genData(function = STFunction, deriv_function = STDeriv, dim_x = INPUT_DIM, min_x = min_x, max_x = max_x, num_samples = nTrain)
 x = [bs[0] for bs in batch_samples]
 y = [bs[1] for bs in batch_samples]
 dydx = [bs[2] for bs in batch_samples]
 train_dataloader, config = get_data_loader(x = x, y = y, dydx = dydx_train, batch_size = batch_size, normalize = normalize)
 
-batch_samples = genData(function = STFunction, deriv_function = STDeriv, min_x = min_x, max_x = max_x, num_samples = nTest)
+batch_samples = genData(function = STFunction, deriv_function = STDeriv, dim_x = INPUT_DIM, min_x = min_x, max_x = max_x, num_samples = nTest)
 x = [bs[0] for bs in batch_samples]
 y = [bs[1] for bs in batch_samples]
 dydx = [bs[2] for bs in batch_samples]
@@ -116,7 +118,7 @@ This parameter was introduced for this purpose, and remains optional (so you can
 learning_rate_schedule = [(0.0, 1.0e-8), (0.2, 0.1), (0.6, 0.01), (0.9, 1.0e-6), (1.0, 1.0e-8)]
 config["learning_rate_schedule"] = learning_rate_schedule
 ```
-### **Construction of the model**
+### **Model**
 
 * *Parameters of the model*
 
@@ -180,14 +182,14 @@ with_derivative = False for normal training, True for sobolev training and twin_
 max_epoch = # maximun number of epoch
 improving_limit = float("inf") # Stop training if the training loss does not decrease n times (no limit here)
 
-model, stats, best_loss = train(name, 
-						   		model, 
-						   		train_dataloader, 
-						   		optimizer, 
-						   		criterion, 
-						   		config, 
-                           		with_derivative, max_epoch = max_epoch, 
-                           		improving_limit = improving_limit)
+model, stats, best_loss = train(
+    name, model, train_dataloader, 
+	optimizer, 
+	criterion, 
+	config, 
+    with_derivative, max_epoch = max_epoch, 
+    improving_limit = improving_limit
+)
 
 
 plot_stat(stats, with_derivative = with_derivative)
@@ -275,9 +277,10 @@ from twin_net_tf import Generator
 from functions import STFunction, STDeriv
 
 min_x, max_x = -5, 5
-
+INPUT_DIM = 2
 generator = Generator(callable_function = STFunction, 
                       callable_function_deriv = STDeriv, 
+                      dim_x = INPUT_DIM,
                       min_x = min_x, max_x = max_x)
 ```
 * **For financial functions**

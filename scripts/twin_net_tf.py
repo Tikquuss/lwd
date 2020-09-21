@@ -33,7 +33,7 @@ from torch.utils.data import TensorDataset, DataLoader, Dataset
 
 
 #from utils import genData
-from functions import genData
+from utils import genData
 
 # representation of real numbers in TF, change here for 32/64 bits
 real_type = tf.float32
@@ -532,10 +532,11 @@ class Neural_Approximator():
 # main class
 class Generator :
     
-    def __init__(self, callable_function, callable_function_deriv, min_x, max_x):
+    def __init__(self, callable_function, callable_function_deriv, dim_x, min_x, max_x):
         
         self.callable_function = callable_function
         self.callable_function_deriv = callable_function_deriv
+        self.dim_x = dim_x
         self.min_x = min_x 
         self.max_x = max_x
 
@@ -548,6 +549,7 @@ class Generator :
         batch_samples = genData(
                         function = self.callable_function, 
                         deriv_function = self.callable_function_deriv, 
+                        dim_x = self.dim_x,
                         min_x = self.min_x, max_x = self.max_x, num_samples = num_samples
                 )
 
@@ -564,6 +566,7 @@ class Generator :
         batch_samples = genData(
                         function = self.callable_function, 
                         deriv_function = self.callable_function_deriv, 
+                        dim_x = self.dim_x,
                         min_x = self.min_x, max_x = self.max_x, num_samples = num_samples
                 )
 
