@@ -316,15 +316,32 @@ def train(description,
             callback(approximator, epoch)
 
         with tf.Session() as sess:
-            predictions, deltas = approximator.predict_values_and_derivs(approximator.x)
+            predictions, deltas = approximator.predict_values_and_derivs_scaled(approximator.x)
             
             loss = sess.run([
                              tf.losses.mean_squared_error(approximator.y, predictions), 
                              tf.losses.mean_squared_error(approximator.dy_dx, deltas)]
                             )
-            print('Epoch {}: y loss : {}, dy loss : {}'.format(epoch, loss[0], loss[1]))
+            print('Epoch {}: y loss scaled : {}, dy loss _scaled : {}'.format(epoch, loss[0], loss[1]))
+            print()
+
+            y = approximator.y*approximator.y_std + approximator.y_mean
+            predictions = predictions*approximator.y_std + approximator.y_mean
+
+            dydx = approximator.x_std / approximator.y_std * approximator.dy_dx
+            deltas = approximator.x_std / approximator.y_std * deltas
+
+            loss = sess.run([
+                             tf.losses.mean_squared_error(y, predictions), 
+                             tf.losses.mean_squared_error(dydx, deltas)]
+                            )
+            print('y loss no scaled : {}, dy loss no scaled : {}'.format(loss[0], loss[1]))
+            print()
+            print()
+
             stats['train_yloss'].append(loss[0])
             stats['train_dyloss'].append(loss[1])
+
 
             if loss[0] < best_loss :
                 best_loss = loss[0]
@@ -382,13 +399,13 @@ def normalize_data(x_raw, y_raw, dydx_raw=None, crop=None):
     
 class Neural_Approximator():
     
-    def __init__(self, x_raw, y_raw, 
-                 dydx_raw=None):      # derivatives labels, 
+    def __init__(self, x_raw, y_raw, dydx_raw = None, normalize = True):      # derivatives labels, 
        
         self.x_raw = x_raw
         self.y_raw = y_raw
         self.dydx_raw = dydx_raw
-        
+        self.normalize = normalize
+
         # tensorflow logic
         self.graph = None
         self.session = None
@@ -468,8 +485,14 @@ class Neural_Approximator():
                 weight_seed=None):
 
         # prepare dataset
-        self.x_mean, self.x_std, self.x, self.y_mean, self.y_std, self.y, self.dy_dx, self.lambda_j = \
-            normalize_data(self.x_raw, self.y_raw, self.dydx_raw, m)
+        if self.normalize : 
+            self.x_mean, self.x_std, self.x, self.y_mean, self.y_std, self.y, self.dy_dx, self.lambda_j = \
+                normalize_data(self.x_raw, self.y_raw, self.dydx_raw, m)
+        else :
+
+            self.x_mean, self.x_std, self.x = np.zeros_like(self.x_raw[0]), np.ones_like(self.x_raw[0]), self.x_raw
+            self.y_mean, self.y_std, self.y = np.zeros_like(self.y_raw[0]), np.ones_like(self.y_raw[0]), self.y_raw
+            self.dy_dx, self.lambda_j = self.dydx_raw, 1.
         
         # build graph        
         self.m, self.n = self.x.shape      
@@ -516,6 +539,10 @@ class Neural_Approximator():
         y = self.y_mean + self.y_std * y_scaled
         return y
 
+    def predict_values_scaled(self, x_scaled):
+        y_scaled = self.session.run(self.predictions, feed_dict = {self.inputs: x_scaled})
+        return y_scaled
+
     def predict_values_and_derivs(self, x):
         # scale
         x_scaled = (x-self.x_mean) / self.x_std
@@ -527,6 +554,12 @@ class Neural_Approximator():
         y = self.y_mean + self.y_std * y_scaled
         dydx = self.y_std / self.x_std * dyscaled_dxscaled
         return y, dydx
+
+    def predict_values_and_derivs_scaled(self, x_scaled):
+        y_scaled, dyscaled_dxscaled = self.session.run(
+            [self.predictions, self.derivs_predictions], 
+            feed_dict = {self.inputs: x_scaled})
+        return y_scaled, dyscaled_dxscaled
         
     
 # main class
@@ -586,6 +619,7 @@ def test(generator,
          deltidx=0, 
          generator_kwargs = {},
          epochs=100,
+         normalize = True,
          improving_limit = float("inf")):
 
     # simulation
@@ -603,7 +637,7 @@ def test(generator,
 
     # neural approximator
     print("initializing neural appropximator")
-    regressor = Neural_Approximator(xTrain, yTrain, dydxTrain)
+    regressor = Neural_Approximator(xTrain, yTrain, dydxTrain, normalize = normalize)
     print("done")
     
     predvalues = {}    
@@ -911,6 +945,7 @@ class Bachelier:
         vegas = bachVega(baskets, self.K, self.bktVol, self.T2 - self.T1) 
         return spots, baskets, prices.reshape((-1, 1)), deltas, vegas
 
+from utils import normalize_data as normalize_data_torch
 def get_diffML_data_loader(generator, nTrain, nTest, train_seed, test_seed, batch_size = 32, with_derivative = False, normalize = False):
   
     xTrain, yTrain, dydxTrain = generator.trainingSet(nTrain, seed = train_seed)
@@ -918,16 +953,24 @@ def get_diffML_data_loader(generator, nTrain, nTest, train_seed, test_seed, batc
 
     _, n = xTrain.shape
     if normalize :
-        x_mean, x_std, xTrain, y_mean, y_std, yTrain, dydxTrain, lambda_j = normalize_data(xTrain, yTrain, dydxTrain, nTrain)
-        config = {"x_mean" : x_mean[0], "x_std" : x_std[0], "y_mean" : y_mean[0], "y_std" : y_std[0], "lambda_j" : lambda_j, "n" : n}
-        def get_alpha_beta (lam) :
-            alpha = 1.0 / (1.0 + lam * n)
-            return alpha, 1.0 - alpha
+        cond = not (dydxTrain is None)
+        (x_mean, x_std, xTrain), (y_mean, y_std, yTrain), (dydx_mean, dydx_std, dydxTrain) = normalize_data_torch(
+                                                                            xTrain, yTrain, dydxTrain, nTrain)
+        """
+        config = {"x_mean" : x_mean, "x_std" : x_std, "y_mean" : y_mean, "y_std" : y_std, 
+                  "dydx_mean" : dydx_mean if cond else 0., "dydx_std" : dydx_std if cond else 1.}
+        """
 
-        config["get_alpha_beta"] = get_alpha_beta 
+        config = {"x_mean" : torch.tensor(x_mean), "x_std" : torch.tensor(x_std), 
+                  "y_mean" : torch.tensor(y_mean), "y_std" : torch.tensor(y_std), 
+                  "dydx_mean" : torch.tensor(dydx_mean if cond else 0.), 
+                  "dydx_std" : torch.tensor(dydx_std if cond else 1.) 
+                  }
+
     else :
-        config = {"x_mean" : 0.0, "x_std" : 1.0, "y_mean" : 0.0, "y_std" : 1.0, "lambda_j" : 1.0, "n" : n}
-        config["get_alpha_beta"] = lambda lam :  (1.0, 1.0)
+        config = {"x_mean" : 0.0, "x_std" : 1.0, "y_mean" : 0.0, "y_std" : 1.0, 
+                  "dydx_mean" : 0.0, 
+                  "dydx_std" : 1.0 }
     
     tensor_xTrain, tensor_yTrain = torch.FloatTensor(xTrain) , torch.FloatTensor(yTrain)
     tensor_xTest, tensor_yTest = torch.FloatTensor(xTest), torch.FloatTensor(yTest) 

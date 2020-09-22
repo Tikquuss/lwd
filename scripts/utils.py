@@ -17,6 +17,13 @@ import itertools
 def gradient(y, x, grad_outputs=None):
     if grad_outputs is None:
         grad_outputs = torch.ones_like(y)
+    """    
+    else :
+        a = grad_outputs.shape == y[0].shape
+        assert a or grad_outputs.shape == y.shape
+        if a :
+             grad_outputs = grad_outputs.repeat(y.shape[0], 1, 1)
+    """
     grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
     return grad
 
@@ -104,26 +111,20 @@ def plotGrad(name, deriv_function = None, model = None,
 
 def plot_stat(stats, with_derivative = False):
     if with_derivative :
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, sharex=True, figsize = (20, 3))
+        fig, (ax2, ax3) = plt.subplots(1, 2, sharex=True, figsize = (20, 3))
         fig.suptitle('')
-
-        ax1.plot(range(len(stats['train_loss'])), stats['train_loss'], label='train')
-        ax1.set(xlabel='epoch', ylabel='loss')
-        ax1.set_title('loss per epoch')
-        ax1.legend()
-        ax1.label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
 
         ax2.plot(range(len(stats['train_yloss'])), stats['train_yloss'], label='train')
         ax2.set(xlabel='epoch', ylabel='yloss')
         ax2.set_title('yloss per epoch')
         ax2.legend()
-        ax2.label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
+        #ax2.label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
 
         ax3.plot(range(len(stats['train_dyloss'])), stats['train_dyloss'], label='train')
         ax3.set(xlabel='epoch', ylabel='dyloss')
         ax3.set_title('dyloss per epoch')
         ax3.legend()
-        ax3.label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
+        #ax3.label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
 
     else :
         plt.plot(range(len(stats['train_loss'])), stats['train_loss'])
@@ -190,7 +191,7 @@ def get_data_loader(x, y, dydx = None, batch_size = 32, normalize = False):
         m = len(x)
         x = np.array(x)
         y = np.array(y)
-        cond = not (dydx == None)
+        cond = not (dydx is None)
         dydx = np.array(dydx) if cond else None
 
         _, n = x.shape
@@ -214,38 +215,47 @@ def get_data_loader(x, y, dydx = None, batch_size = 32, normalize = False):
             
 
 def forward(net, x, return_layers = False):
-    if len(x.shape) == 1 : # batch
-        x = x.reshape(1, x.shape[0])
+    if len(x.shape) == 1 : 
+        x = x.reshape(1, x.shape[0]) # batching
+
     if not return_layers :
         for linear_layer in net :
-            z = linear_layer.omega_0 * linear_layer.linear.weight.t()
-            x = linear_layer.activation_function(x @ z + linear_layer.linear.bias) 
+            # x = g_l ( zl-1 @ (omega_l * wl.T) + bl )
+            x = linear_layer.activation_function(x @ (linear_layer.omega_0 * linear_layer.linear.weight.t()) + linear_layer.linear.bias) 
         return x
     else :
         zs = []
         for linear_layer in net :
-            z = linear_layer.omega_0 * linear_layer.linear.weight.t()
-            z = x @ z + linear_layer.linear.bias 
+            # zl_stilde = zl-1 @ (omega_l * wl.T) + bl 
+            z = x @ (linear_layer.omega_0 * linear_layer.linear.weight.t()) + linear_layer.linear.bias 
             zs.append(z)
+            # x = g_l ( zl_stilde )
             x = linear_layer.activation_function(z) 
         return x, zs
 
 def backprop(net, y, zs, vL = None):
     ########### 1 #############
-    if not vL :
-        vL = torch.ones_like(y) 
-    else :
-        assert vL.shape == y.shape
     m, n = y.shape[-1], y.shape[0]
-    ybar = torch.eye(m) 
+
+    if vL is None :
+        vL = torch.ones_like(y) # [[1, ...1], [1, 1, ...1] ... [1, ...1]]
+    else :
+        a = vL.shape == y[0].shape # [v1, ...]
+        assert a or vL.shape == y.shape # a or [[v11, ...], [v21, , ...] ...]
+        if a :
+            vL = vL.repeat(n, 1, 1) # [[v1, ...], [v1, , ...] ...]
+    
+    ybar = torch.eye(m)
     if len(y.shape) != 1 :
-        ybar = ybar.repeat(n, 1, 1)
-    zbar = torch.bmm(input = vL.reshape(n, 1, m), mat2 = ybar)  
+        ybar = ybar.repeat(n, 1, 1) # [[1, ...1], [1, 1, ...1] ... [1, ...1]]
+
+    zbar = torch.bmm(input = vL.reshape(n, 1, m), mat2 = ybar) # = vL if vL = [[1, ...1], [1, 1, ...1] ... [1, ...1]]
+
     L = len(zs)
     for l in range(L-1, -1, -1):
         linear_layer = net[l] 
         jacobian_of_dgdzl_stilde = torch.stack(
-            [torch.diag(linear_layer.deriv_activation_function(zs[l][i])) for i in range(n)
+            [torch.diag(linear_layer.deriv_activation_function(zs[l][i])) for i in range(n)  # zL-1, ...,z0
         ]) 
         zbar = torch.bmm(input = torch.bmm(
                                         input = zbar, 
@@ -685,3 +695,32 @@ def test(name, model, dataloader, criterion, config, with_derivative):
         y_pred_list = list(itertools.chain.from_iterable(y_pred_list))
 
         return (running_loss, None, None), (x_list, y_list, None, y_pred_list, None)
+
+
+def global_stat(stats_dic, suptitle = ""):
+    keys1 = ["normal_training", "sobolev_training", "twin_net_tf_differential", "twin_net_tf_normal" ,"twin_net_pytorch"]
+    keys2 = ["mlp", "siren"]
+    keys3 = ["no_normalize", "normalize"]
+    keys4 = [0, 1]
+    keys5 = ['train_yloss', 'train_dyloss']
+
+    # keys4 keys3 keys5 keys1 keys2
+
+    for key4 in keys4 :
+        fig, ax = plt.subplots(2, 2, sharex=False, figsize = (20, 8))
+        fig.suptitle(key4)
+        for i, key3 in enumerate(keys3) :
+            for j, key5 in enumerate(keys5) :
+                for key1 in keys1 :
+                    for key2 in keys2 :
+                        try :
+                            y = stats_dic[key1][key2][key3][key4][key5]
+                            x = range(len(y))
+                            ax[i][j].plot(x, y, label = key1 +"-"+key2)
+                        except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
+                              pass
+                        
+                    ax[i][j].set(xlabel = 'epoch' if i != 0 else "", ylabel = key5)
+                    ax[i][j].set_title('%s per epoch' % key5 if i != 1 else "")
+                    ax[i][j].legend()
+                    #ax[i][j].label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.

@@ -256,12 +256,12 @@ def diff_train_one_epoch(inputs, labels, derivs_labels,
 
 class Neural_Approximator():
     
-    def __init__(self, x_raw, y_raw, 
-                 dydx_raw=None):      # derivatives labels, 
+    def __init__(self, x_raw, y_raw, dydx_raw=None, normalize = True):      # derivatives labels, 
        
         self.x_raw = x_raw
         self.y_raw = y_raw
         self.dydx_raw = dydx_raw
+        self.normalize = normalize
         
         # tensorflow logic
         self.graph = None
@@ -347,9 +347,15 @@ class Neural_Approximator():
                 outermost_linear = True):
 
         # prepare dataset
-        self.x_mean, self.x_std, self.x, self.y_mean, self.y_std, self.y, self.dy_dx, self.lambda_j = \
-            normalize_data(self.x_raw, self.y_raw, self.dydx_raw, m)
-        
+        if self.normalize : 
+            self.x_mean, self.x_std, self.x, self.y_mean, self.y_std, self.y, self.dy_dx, self.lambda_j = \
+                normalize_data(self.x_raw, self.y_raw, self.dydx_raw, m)
+        else :
+
+            self.x_mean, self.x_std, self.x = np.zeros_like(self.x_raw[0]), np.ones_like(self.x_raw[0]), self.x_raw
+            self.y_mean, self.y_std, self.y = np.zeros_like(self.y_raw[0]), np.ones_like(self.y_raw[0]), self.y_raw
+            self.dy_dx, self.lambda_j = self.dydx_raw, 1.
+
         # build graph        
         self.m, self.n = self.x.shape        
         self.build_graph(differential, lam, hidden_units, hidden_layers, weight_seed, first_omega_0, hidden_omega_0, outermost_linear)
@@ -394,6 +400,10 @@ class Neural_Approximator():
         y = self.y_mean + self.y_std * y_scaled
         return y
 
+    def predict_values_scaled(self, x_scaled):
+        y_scaled = self.session.run(self.predictions, feed_dict = {self.inputs: x_scaled})
+        return y_scaled
+
     def predict_values_and_derivs(self, x):
         # scale
         x_scaled = (x-self.x_mean) / self.x_std
@@ -405,6 +415,12 @@ class Neural_Approximator():
         y = self.y_mean + self.y_std * y_scaled
         dydx = self.y_std / self.x_std * dyscaled_dxscaled
         return y, dydx
+
+    def predict_values_and_derivs_scaled(self, x_scaled):
+        y_scaled, dyscaled_dxscaled = self.session.run(
+            [self.predictions, self.derivs_predictions], 
+            feed_dict = {self.inputs: x_scaled})
+        return y_scaled, dyscaled_dxscaled
         
         
 def test(generator, 
@@ -420,6 +436,7 @@ def test(generator,
          first_omega_0 = 30, 
          hidden_omega_0 = 30., 
          outermost_linear = True,
+         normalize = True,
          improving_limit = float("inf")):
 
     # simulation
@@ -437,7 +454,7 @@ def test(generator,
 
     # neural approximator
     print("initializing neural appropximator")
-    regressor = Neural_Approximator(xTrain, yTrain, dydxTrain)
+    regressor = Neural_Approximator(xTrain, yTrain, dydxTrain, normalize = normalize)
     print("done")
     
     predvalues = {}    
