@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
+import pandas as pd
 
 from tqdm import tqdm_notebook
 import random
@@ -697,12 +698,14 @@ def test(name, model, dataloader, criterion, config, with_derivative):
         return (running_loss, None, None), (x_list, y_list, None, y_pred_list, None)
 
 
+keys1 = ["normal_training", "sobolev_training", "twin_net_tf_differential", "twin_net_tf_normal" ,"twin_net_pytorch"]
+keys2 = ["mlp", "siren"]
+keys3 = ["no_normalize", "normalize"]
+keys4 = [0, 1]
+keys5 = ['train_yloss', 'train_dyloss']
+
 def global_stat(stats_dic, suptitle = ""):
-    keys1 = ["normal_training", "sobolev_training", "twin_net_tf_differential", "twin_net_tf_normal" ,"twin_net_pytorch"]
-    keys2 = ["mlp", "siren"]
-    keys3 = ["no_normalize", "normalize"]
-    keys4 = [0, 1]
-    keys5 = ['train_yloss', 'train_dyloss']
+    global keys1, keys2, keys3, keys4, keys5
 
     # keys4 keys3 keys5 keys1 keys2
 
@@ -724,3 +727,27 @@ def global_stat(stats_dic, suptitle = ""):
                     ax[i][j].set_title('%s per epoch' % key5 if i != 1 else "")
                     ax[i][j].legend()
                     #ax[i][j].label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
+
+def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
+    global keys1, keys2, keys3, keys4, keys5
+    # keys4 keys3 keys1 keys2
+    rows = []
+    result = {}
+    for key4 in keys4 :
+        result[key4] = {}
+        for key3 in keys3 :
+            key3_tmp = key3 + ('' if key4==0 else "-lr_scheduler") + ("-"+n_samples if n_samples else "")
+            result[key4][key3_tmp] = {}
+            for key1 in keys1 :
+                for key2 in keys2 :
+                    try :
+                        key = key1 +"-"+key2
+                        rows.append(key)
+                        result[key4][key3_tmp][key] = dico[key1][key2][key3][key4]
+                    except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
+                        result[key4][key3_tmp][key] = "RAS" 
+
+    pd.DataFrame(result[0]).to_csv(csv_path, index = rows, mode = mode)
+    pd.DataFrame(result[1]).to_csv(csv_path, index= rows, mode= mode)
+
+    return list(set(rows)), result
