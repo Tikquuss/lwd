@@ -437,7 +437,8 @@ def test(generator,
          hidden_omega_0 = 30., 
          outermost_linear = True,
          normalize = True,
-         improving_limit = float("inf")):
+         improving_limit = float("inf"),
+         min_batch_size = 256):
 
     # simulation
     print("simulating training, valid and test sets")
@@ -473,7 +474,7 @@ def test(generator,
                          first_omega_0 = first_omega_0, hidden_omega_0 = hidden_omega_0, outermost_linear = outermost_linear)
             
         t0 = time.time()
-        regressor.train("standard training", epochs = epochs, improving_limit = improving_limit)
+        regressor.train("standard training", epochs = epochs, improving_limit = improving_limit, min_batch_size = min_batch_size)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("standard", size)] = predictions
         preddeltas[("standard", size)] = deltas[:, deltidx]
@@ -489,7 +490,7 @@ def test(generator,
                          first_omega_0 = first_omega_0, hidden_omega_0 = hidden_omega_0, outermost_linear = outermost_linear)
             
         t0 = time.time()
-        regressor.train("differential training", epochs = epochs, improving_limit = improving_limit)
+        regressor.train("differential training", epochs = epochs, improving_limit = improving_limit, min_batch_size = min_batch_size)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("differential", size)] = predictions
         preddeltas[("differential", size)] = deltas[:, deltidx]

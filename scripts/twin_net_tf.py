@@ -381,7 +381,7 @@ def normalize_data(x_raw, y_raw, dydx_raw=None, crop=None):
     # normalize dataset
     x_mean = x_cropped.mean(axis=0)
     x_std = x_cropped.std(axis=0) + epsilon
-    x = (x_cropped- x_mean) / x_std
+    x = (x_cropped - x_mean) / x_std
     y_mean = y_cropped.mean(axis=0)
     y_std = y_cropped.std(axis=0) + epsilon
     y = (y_cropped-y_mean) / y_std
@@ -620,7 +620,8 @@ def test(generator,
          generator_kwargs = {},
          epochs=100,
          normalize = True,
-         improving_limit = float("inf")):
+         improving_limit = float("inf"),
+         min_batch_size = 256):
 
     # simulation
     print("simulating training, valid and test sets")
@@ -655,7 +656,7 @@ def test(generator,
         regressor.prepare(m = size, differential= False, weight_seed = weightSeed, **generator_kwargs)
             
         t0 = time.time()
-        regressor.train("standard training", epochs=epochs, improving_limit = improving_limit)
+        regressor.train("standard training", epochs=epochs, improving_limit = improving_limit, min_batch_size = min_batch_size)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("standard", size)] = predictions
         preddeltas[("standard", size)] = deltas[:, deltidx]
@@ -670,7 +671,7 @@ def test(generator,
         regressor.prepare(m = size, differential = True, weight_seed = weightSeed, **generator_kwargs)
             
         t0 = time.time()
-        regressor.train("differential training", epochs=epochs, improving_limit = improving_limit)
+        regressor.train("differential training", epochs=epochs, improving_limit = improving_limit, min_batch_size = min_batch_size)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("differential", size)] = predictions
         preddeltas[("differential", size)] = deltas[:, deltidx]
@@ -954,23 +955,23 @@ def get_diffML_data_loader(generator, nTrain, nTest, train_seed, test_seed, batc
     _, n = xTrain.shape
     if normalize :
         cond = not (dydxTrain is None)
-        (x_mean, x_std, xTrain), (y_mean, y_std, yTrain), (dydx_mean, dydx_std, dydxTrain) = normalize_data_torch(
+        (x_mean, x_std, xTrain), (y_mean, y_std, yTrain), (dydx, lambda_j) = normalize_data_torch(
                                                                             xTrain, yTrain, dydxTrain, nTrain)
-        """
-        config = {"x_mean" : x_mean, "x_std" : x_std, "y_mean" : y_mean, "y_std" : y_std, 
-                  "dydx_mean" : dydx_mean if cond else 0., "dydx_std" : dydx_std if cond else 1.}
-        """
-
+        
         config = {"x_mean" : torch.tensor(x_mean), "x_std" : torch.tensor(x_std), 
                   "y_mean" : torch.tensor(y_mean), "y_std" : torch.tensor(y_std), 
-                  "dydx_mean" : torch.tensor(dydx_mean if cond else 0.), 
-                  "dydx_std" : torch.tensor(dydx_std if cond else 1.) 
-                  }
+                  "n" : n, "lambda_j" : torch.tensor(lambda_j)
+        }
+
+        def get_alpha_beta(lam) :
+            alpha = 1.0 / (1.0 + lam * n)
+            return alpha, 1.0 - alpha
+
+        config["get_alpha_beta"] = get_alpha_beta
 
     else :
-        config = {"x_mean" : 0.0, "x_std" : 1.0, "y_mean" : 0.0, "y_std" : 1.0, 
-                  "dydx_mean" : 0.0, 
-                  "dydx_std" : 1.0 }
+        config = {"x_mean" : 0.0, "x_std" : 1.0, "y_mean" : 0.0, "y_std" : 1.0, "lambda_j" : 1.0, "n" : n}
+        config["get_alpha_beta"] = lambda lam : (1.0, 1.0)
     
     tensor_xTrain, tensor_yTrain = torch.FloatTensor(xTrain) , torch.FloatTensor(yTrain)
     tensor_xTest, tensor_yTest = torch.FloatTensor(xTest), torch.FloatTensor(yTest) 

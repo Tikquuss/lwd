@@ -28,7 +28,8 @@ def gradient(y, x, grad_outputs=None):
     grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
     return grad
 
-def genData(function, deriv_function, dim_x, min_x, max_x, num_samples):
+def genData(function, deriv_function, dim_x, min_x, max_x, num_samples, random_seed = 0):
+    random.seed(random_seed)
     samples = []
     for n in range(num_samples):
         x = np.array([random.uniform(min_x, max_x) for i in range(dim_x)])
@@ -144,22 +145,22 @@ def normalize_data(x_raw, y_raw, dydx_raw=None, crop=None):
     # normalize dataset
     x_mean = x_cropped.mean(axis=0)
     x_std = x_cropped.std(axis=0) + epsilon
-    x = (x_cropped- x_mean) / x_std
+    x = (x_cropped - x_mean) / x_std
     y_mean = y_cropped.mean(axis=0)
     y_std = y_cropped.std(axis=0) + epsilon
     y = (y_cropped-y_mean) / y_std
     
     # normalize derivatives too
     if dycropped_dxcropped is not None:
-        dydx_mean = dycropped_dxcropped.mean(axis=0)
-        dydx_std = dycropped_dxcropped.std(axis=0) + epsilon
-        dydx = (dycropped_dxcropped - dydx_mean) / dydx_std
+        dy_dx = dycropped_dxcropped / y_std * x_std 
+        # weights of derivatives in cost function = (quad) mean size
+        lambda_j = 1.0 / np.sqrt((dy_dx ** 2).mean(axis=0)).reshape(1, -1)
     else:
-        dydx_mean = None
-        dydx_std = None
-        dydx = None
+        dy_dx = None
+        # weights of derivatives in cost function = (quad) mean size
+        lambda_j = 1.0 
     
-    return (x_mean, x_std, x), (y_mean, y_std, y), (dydx_mean, dydx_std, dydx)
+    return (x_mean, x_std, x), (y_mean, y_std, y), (dy_dx, lambda_j)
 
 def get_data_loader(x, y, dydx = None, batch_size = 32, normalize = False):
 
@@ -185,8 +186,8 @@ def get_data_loader(x, y, dydx = None, batch_size = 32, normalize = False):
 
         _, n = np.array(x).shape
         config = {"x_mean" : 0.0, "x_std" : 1.0, "y_mean" : 0.0, "y_std" : 1.0, "lambda_j" : 1.0, "n" : n}
-
-        return dataloader, {}
+        config["get_alpha_beta"] = lambda lam : (1.0, 1.0)
+        return dataloader, config
         
     else :
         m = len(x)
@@ -196,19 +197,18 @@ def get_data_loader(x, y, dydx = None, batch_size = 32, normalize = False):
         dydx = np.array(dydx) if cond else None
 
         _, n = x.shape
-        
-        (x_mean, x_std, x), (y_mean, y_std, y), (dydx_mean, dydx_std, dydx) = normalize_data(x, y, dydx, None)
-        """
-        config = {"x_mean" : x_mean, "x_std" : x_std, "y_mean" : y_mean, "y_std" : y_std, 
-                  "dydx_mean" : dydx_mean if cond else 0., "dydx_std" : dydx_std if cond else 1.}
-        """
+        (x_mean, x_std, x), (y_mean, y_std, y), (dydx, lambda_j) = normalize_data(x, y, dydx, None)
 
         config = {"x_mean" : torch.tensor(x_mean), "x_std" : torch.tensor(x_std), 
                   "y_mean" : torch.tensor(y_mean), "y_std" : torch.tensor(y_std), 
-                  "dydx_mean" : torch.tensor(dydx_mean if cond else 0.), 
-                  "dydx_std" : torch.tensor(dydx_std if cond else 1.) 
-                  }
-        
+                  "n" : n, "lambda_j" : torch.tensor(lambda_j)
+        }
+
+        def get_alpha_beta(lam) :
+            alpha = 1.0 / (1.0 + lam * n)
+            return alpha, 1.0 - alpha
+
+        config["get_alpha_beta"] = get_alpha_beta
 
         dataloader, _ = get_data_loader(x, y, dydx, batch_size, normalize = False)
 
@@ -379,8 +379,13 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
 
     description = config.get("description", "train...")
     y_mean, y_std = config.get("y_mean", 0.), config.get("y_std", 1.)
-    dydx_mean, dydx_std = config.get("dydx_mean", 0.), config.get("dydx_std", 1.)
-    alpha, beta = config.get("alpha", 1.), config.get("beta", 1.)
+    x_std = config.get("x_std", 1.)
+    
+    lam = 1.0
+    alpha, beta = config["get_alpha_beta"](lam)
+    alpha, beta = config.get("alpha", alpha), config.get("beta", beta)
+    lambda_j = config["lambda_j"]
+
     learning_rate_schedule = config.get("learning_rate_schedule", None)
     if learning_rate_schedule :
         lr_schedule_epochs, lr_schedule_rates = zip(*learning_rate_schedule)
@@ -436,7 +441,7 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
 
                 # Compute Loss
                 l_y = criterion(y_pred.squeeze(), y)
-                l_dydx = criterion(dydx, dydx_pred.detach())
+                l_dydx = criterion(lambda_j * dydx, lambda_j * dydx_pred.detach())
 
                 loss = alpha * l_y + beta * l_dydx
                 
@@ -445,10 +450,10 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
                 r_dydx += l_dydx.item()
 
                 y_pred = y_mean + y_std * y_pred
-                dydx_pred = dydx_mean + dydx_std * dydx_pred
+                dydx_pred = y_std / x_std * dydx_pred
 
                 y = y_mean + y_std * y
-                dydx = dydx_mean + dydx_std * dydx
+                dydx = y_std / x_std * dydx
 
                 l_y_no_scaled = criterion(y_pred.squeeze(), y).item()
                 l_dydx_no_scaled = criterion(dydx , dydx_pred).item()
@@ -558,8 +563,10 @@ def test(name, model, dataloader, criterion, config, with_derivative):
     description = config.get("description", "test...")
     x_mean, x_std = config.get("x_mean", 0.), config.get("x_std", 1.)
     y_mean, y_std = config.get("y_mean", 0.), config.get("y_std", 1.)
-    dydx_mean, dydx_std = config.get("dydx_mean", 0.), config.get("dydx_std", 1.)
-    alpha, beta = config.get("alpha", 1.), config.get("beta", 1.)
+    lam = 1.0
+    alpha, beta = config["get_alpha_beta"](lam)
+    alpha, beta = config.get("alpha", alpha), config.get("beta", beta)
+    lambda_j = config["lambda_j"]
     
     len_dl = len(dataloader)
     assert len_dl
@@ -581,7 +588,7 @@ def test(name, model, dataloader, criterion, config, with_derivative):
             x, y, dydx = batch
             x_scaled = (x-x_mean) / x_std
             y_scaled = (y-y_mean) / y_std
-            dydx_scaled = (dydx - dydx_mean) / dydx_std
+            dydx_scaled = dydx / y_std * x_std
 
             if name == "net" :
                 # Forward pass
@@ -604,7 +611,8 @@ def test(name, model, dataloader, criterion, config, with_derivative):
                 
             
             y_pred = y_mean + y_std * y_pred_scaled
-            dydx_pred = dydx_mean + dydx_std * dydx_pred_scaled
+            dydx_pred = y_std / x_std * dydx_pred_scaled
+
 
             # Compute Loss
             l_y = criterion(y_pred_scaled.squeeze(), y_scaled)
@@ -731,6 +739,19 @@ def global_stat(stats_dic, suptitle = ""):
 def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
     global keys1, keys2, keys3, keys4, keys5
     # keys4 keys3 keys1 keys2
+    
+    min_loss = float("inf")
+    max_loss = 0
+    for key4 in keys4 :
+        for key3 in keys3 :
+            for key1 in keys1 :
+                for key2 in keys2 :
+                    try :
+                        loss = dico[key1][key2][key3][key4]
+                        min_loss = min(min_loss, loss)
+                        max_loss = max(max_loss, loss)
+                    except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
+                        pass 
     rows = []
     result = {}
     for key4 in keys4 :
@@ -743,7 +764,12 @@ def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
                     try :
                         key = key1 +"-"+key2
                         rows.append(key)
-                        result[key4][key3_tmp][key] = dico[key1][key2][key3][key4]
+                        loss = dico[key1][key2][key3][key4]
+                        if min_loss == loss :
+                            loss = "min-" + str(loss)
+                        if max_loss == loss :
+                            loss = "max-" + str(loss)
+                        result[key4][key3_tmp][key] = loss
                     except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
                         result[key4][key3_tmp][key] = "RAS" 
 
