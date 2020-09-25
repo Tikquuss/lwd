@@ -384,7 +384,7 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
     lam = 1.0
     alpha, beta = config["get_alpha_beta"](lam)
     alpha, beta = config.get("alpha", alpha), config.get("beta", beta)
-    lambda_j = config["lambda_j"]
+    lambda_j = config.get("lambda_j", 1.0)
 
     learning_rate_schedule = config.get("learning_rate_schedule", None)
     if learning_rate_schedule :
@@ -566,7 +566,7 @@ def test(name, model, dataloader, criterion, config, with_derivative):
     lam = 1.0
     alpha, beta = config["get_alpha_beta"](lam)
     alpha, beta = config.get("alpha", alpha), config.get("beta", beta)
-    lambda_j = config["lambda_j"]
+    lambda_j = config.get("lambda_j", 1.0)
     
     len_dl = len(dataloader)
     assert len_dl
@@ -616,7 +616,7 @@ def test(name, model, dataloader, criterion, config, with_derivative):
 
             # Compute Loss
             l_y = criterion(y_pred_scaled.squeeze(), y_scaled)
-            l_dydx = criterion(dydx_scaled, dydx_pred_scaled.detach())
+            l_dydx = criterion(lambda_j * dydx_scaled, lambda_j * dydx_pred_scaled.detach())
 
             loss = alpha * l_y + beta * l_dydx
                 
