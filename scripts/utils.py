@@ -473,9 +473,9 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
             r_dydx_no_scaled = r_dydx_no_scaled/len_dl
             running_loss_no_scaled = alpha * r_y_no_scaled + beta * r_dydx_no_scaled
 
-            stats['train_loss'].append(running_loss)
-            stats['train_yloss'].append(r_y)
-            stats['train_dyloss'].append(r_dydx)
+            stats['train_loss'].append(running_loss_no_scaled)
+            stats['train_yloss'].append(r_y_no_scaled)
+            stats['train_dyloss'].append(r_dydx_no_scaled)
 
             if stats[metric][-1] < best_loss :
                 best_loss = stats[metric][-1]
@@ -534,7 +534,7 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
             running_loss = running_loss/len_dl
             running_loss_no_scaled = running_loss_no_scaled/len_dl
 
-            stats[metric].append(running_loss)
+            stats[metric].append(running_loss_no_scaled)
 
             if stats[metric][-1] < best_loss :
                 best_loss = stats[metric][-1]
@@ -625,7 +625,7 @@ def test(name, model, dataloader, criterion, config, with_derivative):
             r_dydx += l_dydx.item()
 
             l_y_no_scaled = criterion(y_pred.squeeze(), y).item()
-            l_dydx_no_scaled = criterion(dydx , dydx_pred).item()
+            l_dydx_no_scaled = criterion(dydx, dydx_pred).item()
             r_y_no_scaled += l_y_no_scaled
             r_dydx_no_scaled += l_dydx_no_scaled
             
@@ -660,7 +660,7 @@ def test(name, model, dataloader, criterion, config, with_derivative):
         except TypeError : # iteration over a 0-d array
             pass
 
-        return (running_loss, r_y, r_dydx), (x_list, y_list, dydx_list, y_pred_list, dydx_pred_list)
+        return (running_loss_no_scaled, r_y_no_scaled, r_dydx_no_scaled), (x_list, y_list, dydx_list, y_pred_list, dydx_pred_list)
 
     else :
   
@@ -703,10 +703,10 @@ def test(name, model, dataloader, criterion, config, with_derivative):
         y_list = list(itertools.chain.from_iterable(y_list))
         y_pred_list = list(itertools.chain.from_iterable(y_pred_list))
 
-        return (running_loss, None, None), (x_list, y_list, None, y_pred_list, None)
+        return (running_loss_no_scaled, None, None), (x_list, y_list, None, y_pred_list, None)
 
 
-keys1 = ["normal_training", "sobolev_training", "twin_net_tf_differential", "twin_net_tf_normal" ,"twin_net_pytorch"]
+keys1 = ["normal_training", "sobolev_training", "twin_net_tf_differential", "twin_net_tf_normal", "twin_net_pytorch"]
 keys2 = ["mlp", "siren"]
 keys3 = ["no_normalize", "normalize"]
 keys4 = [0, 1]
@@ -740,17 +740,18 @@ def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
     global keys1, keys2, keys3, keys4, keys5
     # keys4 keys3 keys1 keys2
     
-    min_loss = float("inf")
-    max_loss = 0
+    min_loss = [float("inf")]*3
+    max_loss = [0]*3
     for key4 in keys4 :
         for key3 in keys3 :
             for key1 in keys1 :
                 for key2 in keys2 :
                     try :
                         loss = dico[key1][key2][key3][key4]
-                        min_loss = min(min_loss, loss)
-                        max_loss = max(max_loss, loss)
+                        min_loss = [min(l1, l2) if l1 is not None else l2 for l1, l2 in zip(min_loss, loss)]
+                        max_loss = [max(l1, l2) if l1 is not None else l2 for l1, l2 in zip(max_loss, loss)]
                     except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
+                        # TypeError: '<' not supported between instances of 'NoneType' and 'int'
                         pass 
     rows = []
     result = {}
@@ -758,20 +759,26 @@ def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
         result[key4] = {}
         for key3 in keys3 :
             key3_tmp = key3 + ('' if key4==0 else "-lr_scheduler") + ("-"+n_samples if n_samples else "")
-            result[key4][key3_tmp] = {}
+            key3_tmps = [key3_tmp+"-y", key3_tmp+"-dy", key3_tmp+"-y+dy"]
+            for key3_tmp in key3_tmps :
+                result[key4][key3_tmp] = {}
             for key1 in keys1 :
                 for key2 in keys2 :
                     try :
                         key = key1 +"-"+key2
                         rows.append(key)
                         loss = dico[key1][key2][key3][key4]
-                        if min_loss == loss :
-                            loss = "min-" + str(loss)
-                        if max_loss == loss :
-                            loss = "max-" + str(loss)
-                        result[key4][key3_tmp][key] = loss
+                        for i, key3_tmp in enumerate(key3_tmps) :
+                            l = loss[i]
+                            if min_loss[i] == l :
+                                l = "min-" + str(l)
+                            if max_loss[i] == l :
+                                l = "max-" + str(l)
+                            result[key4][key3_tmp][key] = l
+                    
                     except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
-                        result[key4][key3_tmp][key] = "RAS" 
+                        for key3_tmp in key3_tmps :
+                            result[key4][key3_tmp][key] = l = "RAS"
 
     pd.DataFrame(result[0]).to_csv(csv_path, index = rows, mode = mode)
     pd.DataFrame(result[1]).to_csv(csv_path, index= rows, mode= mode)
