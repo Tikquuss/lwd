@@ -729,6 +729,11 @@ def global_stat(stats_dic, suptitle = ""):
                             x = range(len(y))
                             ax[i][j].plot(x, y, label = key1 +"-"+key2)
                         except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
+                            if key1 == "normal_training" and key5 == "train_yloss" :
+                                y = stats_dic[key1][key2][key3][key4]["train_loss"]
+                                x = range(len(y))
+                                ax[i][j].plot(x, y, label = key1 +"-"+key2)
+                            else :
                               pass
                         
                     ax[i][j].set(xlabel = 'epoch' if i != 0 else "", ylabel = key5)
