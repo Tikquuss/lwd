@@ -737,7 +737,7 @@ def global_stat(stats_dic, suptitle = ""):
                               pass
                         
                     ax[i][j].set(xlabel = 'epoch' if i != 0 else "", ylabel = key5)
-                    ax[i][j].set_title('%s per epoch' % key5 if i != 1 else "")
+                    ax[i][j].set_title('%s per epoch %s' % (key5 if i != 1 else "", '' if key4==0 else "-lr_scheduler"))
                     ax[i][j].legend()
                     #ax[i][j].label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
 
