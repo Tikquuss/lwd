@@ -16,6 +16,7 @@ import itertools
 #from twin_net_tf import normalize_data
 
 def gradient(y, x, grad_outputs=None):
+    """Compute dy/dx @ grad_outputs"""
     if grad_outputs is None:
         grad_outputs = torch.ones_like(y)
     """    
@@ -28,7 +29,28 @@ def gradient(y, x, grad_outputs=None):
     grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
     return grad
 
+def jacobian(y, x):
+    """Compute dy/dx = dy/dx @ grad_outputs; 
+    for grad_outputs in [1, 0, ..., 0], [0, 1, 0, ..., 0], ...., [0, ..., 0, 1]"""
+    m, n = y.shape[0], x.shape[0]
+    jac = torch.zeros(m, n) 
+    for i in range(m):
+        grad_outputs = torch.zeros_like(y)
+        grad_outputs[i] = 1
+        jac[i] = gradient(y, x, grad_outputs = grad_outputs)
+    return jac
+
 def genData(function, deriv_function, dim_x, min_x, max_x, num_samples, random_seed = 0):
+    """takes a :
+        * function : f(x : array), return y 
+        * its derivative: f'(i: int), takes i as parameter and returns another function that takes x and returns df(x)/dx[i]=dy/dx[i].
+        * dim_x : dimension of x
+        * the boundaries of the domain in which the points will be generated unify the points
+        * the number of examples (n) to be generated
+        * and the random seed for reproducibility
+
+    and returns (xi, yi, [dydx[j], j=1...dim_x]), i = 1….n"""
+    
     random.seed(random_seed)
     samples = []
     for n in range(num_samples):
@@ -42,6 +64,7 @@ def genData(function, deriv_function, dim_x, min_x, max_x, num_samples, random_s
 def plotFunction(name, function = None, model = None, 
                  min_x = -5, max_x = 5, step_x = 0.25, 
                  min_y = -5, max_y = 5, step_y = 0.25) :
+    """plot the given function/model"""
     assert function or model
     x = np.arange(start = min_x, stop = max_x, step = step_x, dtype = np.float)
     y = np.arange(start = min_y, stop = max_y, step = step_y, dtype = np.float)
@@ -79,6 +102,7 @@ def plotFunction(name, function = None, model = None,
 def plotGrad(name, deriv_function = None, model = None, 
              min_x = -5, max_x = 5, step_x = 0.25, 
              min_y = -5, max_y = 5, step_y = 0.25):
+    """plot the gradient of the function/model"""
     assert deriv_function or model
     x = np.arange(start = min_x, stop = max_x, step = step_x, dtype = np.float)
     y = np.arange(start = min_y, stop = max_y, step = step_y, dtype = np.float)
@@ -112,6 +136,7 @@ def plotGrad(name, deriv_function = None, model = None,
     plt.show()
 
 def plot_stat(stats, with_derivative = False):
+    """"""
     if with_derivative :
         fig, (ax2, ax3) = plt.subplots(1, 2, sharex=True, figsize = (20, 3))
         fig.suptitle('')
@@ -131,11 +156,10 @@ def plot_stat(stats, with_derivative = False):
     else :
         plt.plot(range(len(stats['train_loss'])), stats['train_loss'])
 
-## Data normalization
 # basic data preparation
 epsilon = 1.0e-08
 def normalize_data(x_raw, y_raw, dydx_raw=None, crop=None):
-    
+    """Data normalization"""
     # crop dataset
     m = crop if crop is not None else x_raw.shape[0]
     x_cropped = x_raw[:m]
@@ -163,7 +187,7 @@ def normalize_data(x_raw, y_raw, dydx_raw=None, crop=None):
     return (x_mean, x_std, x), (y_mean, y_std, y), (dy_dx, lambda_j)
 
 def get_data_loader(x, y, dydx = None, batch_size = 32, normalize = False):
-
+    """"""
     if not normalize :
   
         tensor_x = torch.FloatTensor(x)  
@@ -216,6 +240,7 @@ def get_data_loader(x, y, dydx = None, batch_size = 32, normalize = False):
             
 
 def forward(net, x, return_layers = False):
+    """forward pass"""
     if len(x.shape) == 1 : 
         x = x.reshape(1, x.shape[0]) # batching
 
@@ -235,6 +260,7 @@ def forward(net, x, return_layers = False):
         return x, zs
 
 def backprop(net, y, zs, vL = None):
+    """twin net backpropagation"""
     ########### 1 #############
     m, n = y.shape[-1], y.shape[0]
 
@@ -329,6 +355,7 @@ def backprop(net, y, zs, vL = None):
     """
 
 class Linear(nn.Module):
+    """costomized linear layer"""
     def __init__(self, in_features, out_features, bias = True, activation_function = None, deriv_activation_function = None, omega_0 = 1.):
         super(Linear, self).__init__()
         self.linear = nn.Linear(in_features, out_features, bias = bias)
@@ -341,6 +368,7 @@ class Linear(nn.Module):
 
 
 class MLP(nn.Module):
+    """Multi-layer perceptron"""
     def __init__(self, in_features, hidden_features, hidden_layers, out_features, 
                         activation_function = None, deriv_activation_function = None,
                         first_omega_0 = 1., hidden_omega_0 = 1.):
@@ -355,11 +383,12 @@ class MLP(nn.Module):
         return self.net(x)
    
 class Siren(MLP):
+    """MLP with sinus as activation, and basic weigths initialisation"""
     def __init__(self, in_features, hidden_features, hidden_layers, out_features, outermost_linear = False, 
                  first_omega_0 = 30., hidden_omega_0 = 30.):
 
         super(Siren, self).__init__(in_features, hidden_features, hidden_layers, out_features, 
-                                    torch.sin, torch.cos, first_omega_0 = 30., hidden_omega_0 = 30.)
+                                    torch.sin, torch.cos, first_omega_0 = first_omega_0, hidden_omega_0 = hidden_omega_0)
         if outermost_linear :
             self.net[-1] = Linear(hidden_features, out_features, True, torch.sin, torch.cos)
 
@@ -372,7 +401,7 @@ class Siren(MLP):
                                                     np.sqrt(6 / hidden_features) / hidden_omega_0)
 
 def train(name, model, dataloader, optimizer, criterion, config, with_derivative, max_epoch, improving_limit = float('inf'), metric = "train_loss"):
-    
+    """basic training scheme"""
     assert name in ["net", "twin_net"]
 
     assert all([model, dataloader, criterion])
@@ -556,7 +585,7 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
     return model, stats, best_loss
     
 def test(name, model, dataloader, criterion, config, with_derivative):
-
+    """basic testing scheme"""
     assert name in ["net", "twin_net"]
     assert all([model, dataloader, criterion])
 
@@ -712,11 +741,27 @@ keys3 = ["no_normalize", "normalize"]
 keys4 = [0, 1]
 keys5 = ['train_yloss', 'train_dyloss']
 
+def reshape(dic, nTrains) :
+    global keys1, keys2, keys3
+
+    if type(nTrains) == list :
+        sd = {}
+        for i, nTrain in enumerate(nTrains) :
+            sd[nTrain] = {}
+            for key1 in keys1 :
+                sd[nTrain][key1] = {}
+                for key2 in keys2 :
+                    sd[nTrain][key1][key2] = {}
+                    for key3 in keys3 :
+                        sd[nTrain][key1][key2][key3] = dic[key1][key2][key3][i]
+        return sd
+    else :
+        return dic
+
 def global_stat(stats_dic, suptitle = ""):
     global keys1, keys2, keys3, keys4, keys5
 
     # keys4 keys3 keys5 keys1 keys2
-
     for key4 in keys4 :
         fig, ax = plt.subplots(2, 2, sharex=False, figsize = (20, 8))
         fig.suptitle(key4)
@@ -730,16 +775,19 @@ def global_stat(stats_dic, suptitle = ""):
                             ax[i][j].plot(x, y, label = key1 +"-"+key2)
                         except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
                             if key1 == "normal_training" and key5 == "train_yloss" :
-                                y = stats_dic[key1][key2][key3][key4]["train_loss"]
-                                x = range(len(y))
-                                ax[i][j].plot(x, y, label = key1 +"-"+key2)
+                                try :
+                                    y = stats_dic[key1][key2][key3][key4]["train_loss"]
+                                    x = range(len(y))
+                                    ax[i][j].plot(x, y, label = key1 +"-"+key2)
+                                except KeyError :
+                                    pass
                             else :
                               pass
                         
                     ax[i][j].set(xlabel = 'epoch' if i != 0 else "", ylabel = key5)
                     ax[i][j].set_title('%s per epoch %s' % (key5 if i != 1 else "", '' if key4==0 else "-lr_scheduler"))
                     ax[i][j].legend()
-                    #ax[i][j].label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.
+                    #ax[i][j].label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.     
 
 def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
     global keys1, keys2, keys3, keys4, keys5
@@ -783,7 +831,7 @@ def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
                     
                     except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
                         for key3_tmp in key3_tmps :
-                            result[key4][key3_tmp][key] = l = "RAS"
+                            result[key4][key3_tmp][key] = "RAS"
 
     pd.DataFrame(result[0]).to_csv(csv_path, index = rows, mode = mode)
     pd.DataFrame(result[1]).to_csv(csv_path, index= rows, mode= mode)
