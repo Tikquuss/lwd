@@ -734,7 +734,6 @@ def test(name, model, dataloader, criterion, config, with_derivative):
 
         return (running_loss_no_scaled, None, None), (x_list, y_list, None, y_pred_list, None)
 
-
 keys1 = ["normal_training", "sobolev_training", "twin_net_tf_differential", "twin_net_tf_normal", "twin_net_pytorch"]
 keys2 = ["mlp", "siren"]
 keys3 = ["no_normalize", "normalize"]
@@ -770,19 +769,22 @@ def global_stat(stats_dic, suptitle = ""):
                 for key1 in keys1 :
                     for key2 in keys2 :
                         try :
-                            y = stats_dic[key1][key2][key3][key4][key5]
-                            x = range(len(y))
-                            ax[i][j].plot(x, y, label = key1 +"-"+key2)
-                        except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
-                            if key1 == "normal_training" and key5 == "train_yloss" :
-                                try :
-                                    y = stats_dic[key1][key2][key3][key4]["train_loss"]
-                                    x = range(len(y))
-                                    ax[i][j].plot(x, y, label = key1 +"-"+key2)
-                                except KeyError :
-                                    pass
-                            else :
-                              pass
+                            try :
+                                y = stats_dic[key1][key2][key3][key4][key5]
+                                x = range(len(y))
+                                ax[i][j].plot(x, y, label = key1 +"-"+key2)
+                            except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
+                                if key1 == "normal_training" and key5 == "train_yloss" :
+                                    try :
+                                        y = stats_dic[key1][key2][key3][key4]["train_loss"]
+                                        x = range(len(y))
+                                        ax[i][j].plot(x, y, label = key1 +"-"+key2)
+                                    except KeyError :
+                                        pass
+                                else :
+                                  pass
+                        except IndexError :
+                          pass        
                         
                     ax[i][j].set(xlabel = 'epoch' if i != 0 else "", ylabel = key5)
                     ax[i][j].set_title('%s per epoch %s' % (key5 if i != 1 else "", '' if key4==0 else "-lr_scheduler"))
@@ -800,12 +802,15 @@ def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
             for key1 in keys1 :
                 for key2 in keys2 :
                     try :
-                        loss = dico[key1][key2][key3][key4]
-                        min_loss = [min(l1, l2) if l1 is not None else l2 for l1, l2 in zip(min_loss, loss)]
-                        max_loss = [max(l1, l2) if l1 is not None else l2 for l1, l2 in zip(max_loss, loss)]
-                    except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
-                        # TypeError: '<' not supported between instances of 'NoneType' and 'int'
-                        pass 
+                        try :
+                            loss = dico[key1][key2][key3][key4]
+                            min_loss = [min(l1, l2) if l1 is not None else l2 for l1, l2 in zip(min_loss, loss)]
+                            max_loss = [max(l1, l2) if l1 is not None else l2 for l1, l2 in zip(max_loss, loss)]
+                        except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
+                            # TypeError: '<' not supported between instances of 'NoneType' and 'int'
+                            pass 
+                    except IndexError :
+                          pass   
     rows = []
     result = {}
     for key4 in keys4 :
@@ -818,20 +823,23 @@ def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
             for key1 in keys1 :
                 for key2 in keys2 :
                     try :
-                        key = key1 +"-"+key2
-                        rows.append(key)
-                        loss = dico[key1][key2][key3][key4]
-                        for i, key3_tmp in enumerate(key3_tmps) :
-                            l = loss[i]
-                            if min_loss[i] == l :
-                                l = "min-" + str(l)
-                            if max_loss[i] == l :
-                                l = "max-" + str(l)
-                            result[key4][key3_tmp][key] = l
-                    
-                    except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
-                        for key3_tmp in key3_tmps :
-                            result[key4][key3_tmp][key] = "RAS"
+                        try :
+                            key = key1 +"-"+key2
+                            rows.append(key)
+                            loss = dico[key1][key2][key3][key4]
+                            for i, key3_tmp in enumerate(key3_tmps) :
+                                l = loss[i]
+                                if min_loss[i] == l :
+                                    l = "min-" + str(l)
+                                if max_loss[i] == l :
+                                    l = "max-" + str(l)
+                                result[key4][key3_tmp][key] = l
+                        
+                        except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
+                            for key3_tmp in key3_tmps :
+                                result[key4][key3_tmp][key] = "RAS"
+                    except IndexError :
+                          pass       
 
     pd.DataFrame(result[0]).to_csv(csv_path, index = rows, mode = mode)
     pd.DataFrame(result[1]).to_csv(csv_path, index= rows, mode= mode)
