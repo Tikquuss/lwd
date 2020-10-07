@@ -752,7 +752,10 @@ def reshape(dic, nTrains) :
                 for key2 in keys2 :
                     sd[nTrain][key1][key2] = {}
                     for key3 in keys3 :
-                        sd[nTrain][key1][key2][key3] = dic[key1][key2][key3][i]
+                        try :
+                            sd[nTrain][key1][key2][key3] = dic[key1][key2][key3][i]
+                        except (KeyError, TypeError, IndexError) :
+                            pass
         return sd
     else :
         return dic
