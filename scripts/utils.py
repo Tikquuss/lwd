@@ -12,6 +12,7 @@ from tqdm import tqdm_notebook
 import random
 import os 
 import itertools
+import time
 
 #from twin_net_tf import normalize_data
 
@@ -371,7 +372,10 @@ class MLP(nn.Module):
     """Multi-layer perceptron"""
     def __init__(self, in_features, hidden_features, hidden_layers, out_features, 
                         activation_function = None, deriv_activation_function = None,
-                        first_omega_0 = 1., hidden_omega_0 = 1.):
+                        first_omega_0 = 1., hidden_omega_0 = 1., init_weights = True, params_seed = 0):
+        torch.manual_seed(params_seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
         super(MLP, self).__init__()
         net = []
         net.append(Linear(in_features, hidden_features, True, activation_function, deriv_activation_function, first_omega_0))  
@@ -379,16 +383,28 @@ class MLP(nn.Module):
         net.append(Linear(hidden_features, out_features, True, None, None, hidden_omega_0))
         self.net = nn.Sequential(*net)
 
+        if init_weights :
+            # init_weights
+            with torch.no_grad():
+                self.net[0].linear.weight.uniform_(-1 / in_features, 1 / in_features)      
+                    
+                for l in range(1, len(self.net)) :
+                    self.net[l].linear.weight.uniform_(-np.sqrt(6 / hidden_features) / hidden_omega_0, 
+                                                        np.sqrt(6 / hidden_features) / hidden_omega_0)
+
     def forward(self, x):
         return self.net(x)
    
 class Siren(MLP):
     """MLP with sinus as activation, and basic weigths initialisation"""
     def __init__(self, in_features, hidden_features, hidden_layers, out_features, outermost_linear = False, 
-                 first_omega_0 = 30., hidden_omega_0 = 30.):
-
+                 first_omega_0 = 30., hidden_omega_0 = 30., init_weights = True, params_seed = 0):
+        torch.manual_seed(params_seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
         super(Siren, self).__init__(in_features, hidden_features, hidden_layers, out_features, 
-                                    torch.sin, torch.cos, first_omega_0 = first_omega_0, hidden_omega_0 = hidden_omega_0)
+                                    torch.sin, torch.cos, first_omega_0 = first_omega_0, hidden_omega_0 = hidden_omega_0, 
+                                    init_weights = init_weights, params_seed = params_seed)
         if outermost_linear :
             self.net[-1] = Linear(hidden_features, out_features, True, torch.sin, torch.cos)
 
@@ -409,11 +425,15 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
     description = config.get("description", "train...")
     y_mean, y_std = config.get("y_mean", 0.), config.get("y_std", 1.)
     x_std = config.get("x_std", 1.)
-    
+    log_interval = 1
+    lr = optimizer.param_groups[0]['lr']
     lam = 1.0
     alpha, beta = config["get_alpha_beta"](lam)
     alpha, beta = config.get("alpha", alpha), config.get("beta", beta)
     lambda_j = config.get("lambda_j", 1.0)
+
+    #StepLR is applied to adjust the learn rate through epochs
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 1.0, gamma=0.95)
 
     learning_rate_schedule = config.get("learning_rate_schedule", None)
     if learning_rate_schedule :
@@ -433,17 +453,20 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
     best_loss = float('inf')
     counter = 1
     stats = {}
-    
+    start_time = time.time()
+    total_time = 0
+
     if with_derivative :
         stats['train_loss'] = []
         stats['train_yloss'] = []
         stats['train_dyloss'] = []
 
         for epoch in tqdm_notebook(range(max_epoch), desc=description):
+            #scheduler.step()
             if learning_rate_schedule :
                 # interpolate learning rate in cycle
                 learning_rate = np.interp(epoch / max_epoch, lr_schedule_epochs, lr_schedule_rates)
-                optimizer.lr = learning_rate
+                optimizer.param_groups[0]['lr'] = learning_rate
 
             running_loss = 0
             r_y, r_dydx = 0, 0
@@ -492,6 +515,8 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
                 
                 # Backward pass
                 loss.backward()
+                # scale all the gradient together to prevent exploding.
+                torch.nn.utils.clip_grad_norm_(model.parameters(), lr)
                 optimizer.step()
 
             running_loss = running_loss/len_dl
@@ -513,13 +538,21 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
             else :
                 counter += 1
             
-            print('Epoch {}: train loss: {}, y loss : {}, dy loss : {}'.format(epoch, running_loss, r_y, r_dydx))
-            print()
-            print('train loss no scaled: {}, y loss  no scaled : {}, dy loss  no scaled: {}'.format(
-                  running_loss_no_scaled, r_y_no_scaled, r_dydx_no_scaled
-            ))
-            print()
-            print()
+            if epoch % log_interval == 0 :
+                elapsed = time.time() - start_time
+                elapsed = elapsed * 1000 / log_interval
+                total_time += elapsed 
+                #print('ms/epoch {:5.2f}.'.format(elapsed))
+                print('ms/epoch {:5.2f} | lr {:02.9f}'.format(elapsed, scheduler.get_lr()[0]))
+                #print('ms/epoch {:5.2f} | lr {:02.9f}'.format(elapsed, optimizer.param_groups[0]['lr']))
+                start_time = time.time()
+                print('Epoch {}: train loss: {}, y loss : {}, dy loss : {}'.format(epoch, running_loss, r_y, r_dydx))
+                print()
+                print('train loss no scaled: {}, y loss  no scaled : {}, dy loss  no scaled: {}'.format(
+                      running_loss_no_scaled, r_y_no_scaled, r_dydx_no_scaled
+                ))
+                print()
+                print()
 
             if counter == improving_limit + 1:
                 break
@@ -528,10 +561,11 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
         stats['train_loss'] = []
 
         for epoch in tqdm_notebook(range(max_epoch), desc=description):
+            #scheduler.step()
             if learning_rate_schedule :
                 # interpolate learning rate in cycle
                 learning_rate = np.interp(epoch / max_epoch, lr_schedule_epochs, lr_schedule_rates)
-                optimizer.lr = learning_rate
+                optimizer.param_groups[0]['lr'] = learning_rate
             
             running_loss = 0
             running_loss_no_scaled = 0
@@ -540,7 +574,7 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
               
                 x, y = batch
                 #x = x.to(device) 
-        
+                
                 optimizer.zero_grad()
 
                 # Forward pass
@@ -558,6 +592,8 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
                 
                 # Backward pass
                 loss.backward()
+                # scale all the gradient together to prevent exploding.
+                torch.nn.utils.clip_grad_norm_(model.parameters(), lr)
                 optimizer.step()
             
             running_loss = running_loss/len_dl
@@ -572,12 +608,21 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
             else :
                 counter += 1
             
-            print('Epoch {}: train loss: {} train loss no scaled: {}'.format(epoch, running_loss, running_loss_no_scaled))
-            print()
+            if epoch % log_interval == 0 :
+                elapsed = time.time() - start_time
+                elapsed = elapsed * 1000 / log_interval
+                total_time += elapsed 
+                #print('ms/epoch {:5.2f}.'.format(elapsed))
+                print('ms/epoch {:5.2f} | lr {:02.9f}'.format(elapsed, scheduler.get_lr()[0]))
+                #print('ms/epoch {:5.2f} | lr {:02.9f}'.format(elapsed, optimizer.param_groups[0]['lr']))
+                start_time = time.time()
+                print('Epoch {}: train loss: {} train loss no scaled: {}'.format(epoch, running_loss, running_loss_no_scaled))
+                print()
 
             if counter == improving_limit + 1 :
                 break
     
+    print('total time : %d ms' % total_time)
     # load best model parameters
     model.load_state_dict(torch.load(tmp_best_model_path))
     os.remove(tmp_best_model_path)
