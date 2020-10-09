@@ -845,6 +845,7 @@ def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
     
     min_loss = [float("inf")]*3
     max_loss = [0]*3
+    flag = False
     for key4 in keys4 :
         for key3 in keys3 :
             for key1 in keys1 :
@@ -856,9 +857,15 @@ def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
                             max_loss = [max(l1, l2) if l1 is not None else l2 for l1, l2 in zip(max_loss, loss)]
                         except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
                             # TypeError: '<' not supported between instances of 'NoneType' and 'int'
-                            pass 
+                            # todo
+                            flag = True
                     except IndexError :
                           pass   
+    
+    if flag :
+        min_loss = [float("inf")]*3
+        max_loss = [0]*3
+
     rows = []
     result = {}
     for key4 in keys4 :
