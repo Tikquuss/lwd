@@ -3,11 +3,12 @@ try:
     %tensorflow_version 1.x
     %matplotlib inline
 except Exception:
-    pass
+    pas
 """
 
 # import and test
 import tensorflow as tf
+from tensorflow.keras.initializers import he_uniform as bias_initializer, RandomUniform
 print(tf.__version__)
 print(tf.test.is_gpu_available())
 
@@ -26,36 +27,46 @@ import matplotlib.pyplot as plt
 import time
 from tqdm import tqdm_notebook
 import random
+import time
+import os
+import datetime
 
 from scipy.stats import norm
 import torch
 from torch.utils.data import TensorDataset, DataLoader, Dataset
 
-
-#from utils import genData
-from utils import genData
+from utils import genData, get_filename
 
 # representation of real numbers in TF, change here for 32/64 bits
 real_type = tf.float32
 # real_type = tf.float64
-
 
 ## Feedforward neural network in TensorFlow
 def vanilla_net(
     input_dim,      # dimension of inputs, e.g. 10
     hidden_units,   # units in hidden layers, assumed constant, e.g. 20
     hidden_layers,  # number of hidden layers, e.g. 4
-    seed):          # seed for initialization or None for random
+    activation_function,
+    seed, # seed for initialization or None for random
+    weights_and_biases_initializer = None,
+    first_omega_0 = 1., 
+    hidden_omega_0 = 1.,
+    outermost_linear = True):          
     
     # set seed
     tf.set_random_seed(seed)
-    
+    if weights_and_biases_initializer == None :
+        weights_initializer = [tf.zeros_initializer()]*(hidden_layers + 1)
+        biases_initializer = [tf.variance_scaling_initializer()]*(hidden_layers + 1)
+    else :
+        weights_initializer, biases_initializer = weights_and_biases_initializer
     # input layer
     xs = tf.placeholder(shape=[None, input_dim], dtype=real_type)
     
     # connection weights and biases of hidden layers
     ws = [None]
     bs = [None]
+    omega_0 = [None]
     # layer 0 (input) has no parameters
     
     # layer 0 = input layer
@@ -64,50 +75,64 @@ def vanilla_net(
     # first hidden layer (index 1)
     # weight matrix
     ws.append(tf.get_variable("w1", [input_dim, hidden_units], \
-        initializer = tf.variance_scaling_initializer(), dtype=real_type))
+        initializer = weights_initializer[0], dtype=real_type))
     # bias vector
     bs.append(tf.get_variable("b1", [hidden_units], \
-        initializer = tf.zeros_initializer(), dtype=real_type))
+        initializer = biases_initializer[0], dtype=real_type))
     # graph
-    zs.append(zs[0] @ ws[1] + bs[1]) # eq. 3, l=1
+    z = first_omega_0 * ws[1]
+    zs.append(zs[0] @ z + bs[1]) # eq. 3, l=1
+    omega_0.append(first_omega_0)
     
     # second hidden layer (index 2) to last (index hidden_layers)
     for l in range(1, hidden_layers): 
         ws.append(tf.get_variable("w%d"%(l+1), [hidden_units, hidden_units], \
-            initializer = tf.variance_scaling_initializer(), dtype=real_type))
+            initializer = weights_initializer[l], dtype=real_type))
         bs.append(tf.get_variable("b%d"%(l+1), [hidden_units], \
-            initializer = tf.zeros_initializer(), dtype=real_type))
-        zs.append(tf.nn.softplus(zs[l]) @ ws[l+1] + bs[l+1]) # eq. 3, l=2..L-1
+            initializer = biases_initializer[l], dtype=real_type))
+        z = hidden_omega_0*ws[l+1] 
+        zs.append(activation_function(zs[l]) @ z + bs[l+1]) # eq. 3, l=2..L-1
+        omega_0.append(hidden_omega_0)
 
     # output layer (index hidden_layers+1)
     ws.append(tf.get_variable("w"+str(hidden_layers+1), [hidden_units, 1], \
-            initializer = tf.variance_scaling_initializer(), dtype=real_type))
+            initializer = weights_initializer[hidden_layers], dtype=real_type))
     bs.append(tf.get_variable("b"+str(hidden_layers+1), [1], \
-        initializer = tf.zeros_initializer(), dtype=real_type))
+        initializer = biases_initializer[hidden_layers], dtype=real_type))
     # eq. 3, l=L
-    zs.append(tf.nn.softplus(zs[hidden_layers]) @ ws[hidden_layers+1] + bs[hidden_layers+1]) 
-    
+    z = hidden_omega_0*ws[hidden_layers+1]
+    if outermost_linear :
+        zs.append(activation_function(zs[hidden_layers]) @ z + bs[hidden_layers+1]) 
+    else :
+        zs.append(activation_function(activation_function(zs[hidden_layers]) @ z + bs[hidden_layers+1])) 
+    omega_0.append(hidden_omega_0)
+
     # result = output layer
     ys = zs[hidden_layers+1]
     
     # return input layer, (parameters = weight matrices and bias vectors), 
     # [all layers] and output layer
-    return xs, (ws, bs), zs, ys
+    return xs, (ws, bs, omega_0, outermost_linear), zs, ys
     
 ## Explicit backpropagation and twin network
 
 # compute d_output/d_inputs by (explicit) backprop in vanilla net
 def backprop(
     weights_and_biases, # 2nd output from vanilla_net() 
-    zs):                # 3rd output from vanilla_net()
-    
-    ws, bs = weights_and_biases
+    zs,               # 3rd output from vanilla_net()
+    deriv_activation_function): 
+
+    ws, bs, omega_0, outermost_linear = weights_and_biases
     L = len(zs) - 1
     
     # backpropagation, eq. 4, l=L..1
-    zbar = tf.ones_like(zs[L]) # zbar_L = 1
+    if outermost_linear :
+        zbar = tf.ones_like(zs[L]) # zbar_L = 1
+    else :
+        zbar = deriv_activation_function(zs[L]) # zbar_L = 1
+
     for l in range(L-1, 0, -1):
-        zbar = (zbar @ tf.transpose(ws[l+1])) * tf.nn.sigmoid(zs[l]) # eq. 4
+        zbar = (zbar @ tf.transpose(ws[l+1])) * deriv_activation_function(zs[l]) # eq. 4
     # for l=0
     zbar = zbar @ tf.transpose(ws[1]) # eq. 4
     
@@ -117,27 +142,31 @@ def backprop(
     return xbar    
 
 # combined graph for valuation and differentiation
-def twin_net(input_dim, hidden_units, hidden_layers, seed):
+def twin_net(input_dim, hidden_units, hidden_layers, activation_function, deriv_activation_function, seed,
+             weights_and_biases_initializer = None, first_omega_0 = 1., hidden_omega_0 = 1., outermost_linear = True):
     
     # first, build the feedforward net
-    xs, (ws, bs), zs, ys = vanilla_net(input_dim, hidden_units, hidden_layers, seed)
+    xs, (ws, bs, omega_0, outermost_linear), zs, ys = vanilla_net(input_dim, hidden_units, hidden_layers, activation_function, seed,
+                                       weights_and_biases_initializer, first_omega_0, hidden_omega_0, outermost_linear)
     
     # then, build its differentiation by backprop
-    xbar = backprop((ws, bs), zs)
-    
+    xbar = backprop((ws, bs, omega_0, outermost_linear), zs, deriv_activation_function)
+
     # return input x, output y and differentials d_y/d_z
-    return xs, ys, xbar
+    return xs, ys, xbar, (ws, bs, omega_0, outermost_linear)
     
 ## Vanilla training loop
-def vanilla_training_graph(input_dim, hidden_units, hidden_layers, seed):
+def vanilla_training_graph(input_dim, hidden_units, hidden_layers, activation_function, deriv_activation_function, 
+                          seed, weights_and_biases_initializer = None, first_omega_0 = 1., hidden_omega_0 = 1., outermost_linear = True):
     
     # net
     inputs, weights_and_biases, layers, predictions = \
-        vanilla_net(input_dim, hidden_units, hidden_layers, seed)
+        vanilla_net(input_dim, hidden_units, hidden_layers, activation_function, seed, weights_and_biases_initializer,
+                    first_omega_0, hidden_omega_0, outermost_linear)
     
     # backprop even though we are not USING differentials for training
     # we still need them to predict derivatives dy_dx 
-    derivs_predictions = backprop(weights_and_biases, layers)
+    derivs_predictions = backprop(weights_and_biases, layers, deriv_activation_function)
     
     # placeholder for labels
     labels = tf.placeholder(shape=[None, 1], dtype=real_type)
@@ -150,7 +179,8 @@ def vanilla_training_graph(input_dim, hidden_units, hidden_layers, seed):
     optimizer = tf.train.AdamOptimizer(learning_rate = learning_rate)
     
     # return all necessary 
-    return inputs, labels, predictions, derivs_predictions, learning_rate, loss, optimizer.minimize(loss)
+    return inputs, labels, predictions, derivs_predictions, learning_rate, loss, optimizer.minimize(loss), weights_and_biases
+
 
 # training loop for one epoch
 def vanilla_train_one_epoch(# training graph from vanilla_training_graph()
@@ -180,16 +210,23 @@ def diff_training_graph(
     input_dim, 
     hidden_units, 
     hidden_layers, 
+    activation_function, deriv_activation_function,
     seed, 
     # balance relative weight of values and differentials 
     # loss = alpha * MSE(values) + beta * MSE(greeks, lambda_j) 
     # see online appendix
     alpha, 
     beta,
-    lambda_j):
+    lambda_j,
+    weights_and_biases_initializer = None,
+    first_omega_0 = 1., hidden_omega_0 = 1., outermost_linear = True):
     
     # net, now a twin
-    inputs, predictions, derivs_predictions = twin_net(input_dim, hidden_units, hidden_layers, seed)
+    inputs, predictions, derivs_predictions, weights_and_biases = twin_net(input_dim, hidden_units, 
+                                                                           hidden_layers, activation_function, 
+                                                                           deriv_activation_function, seed,
+                                                                           weights_and_biases_initializer,
+                                                                           first_omega_0, hidden_omega_0, outermost_linear)
     
     # placeholder for labels, now also derivs labels
     labels = tf.placeholder(shape=[None, 1], dtype=real_type)
@@ -206,7 +243,7 @@ def diff_training_graph(
     # return all necessary tensors, including derivatives
     # predictions and labels
     return inputs, labels, derivs_labels, predictions, derivs_predictions, \
-            learning_rate, loss, optimizer.minimize(loss)
+            learning_rate, loss, optimizer.minimize(loss), weights_and_biases
 
 def diff_train_one_epoch(inputs, labels, derivs_labels, 
                          # graph
@@ -232,19 +269,13 @@ def diff_train_one_epoch(inputs, labels, derivs_labels,
         last = min(first + batch_size, m)
         
 ## Combined outer training loop
-
 def train(description,
           # neural approximator
           approximator,              
           # training params
           reinit=True, 
           epochs=100, 
-          # one-cycle learning rate schedule
-          learning_rate_schedule=[    (0.0, 1.0e-8), \
-                                      (0.2, 0.1),    \
-                                      (0.6, 0.01),   \
-                                      (0.9, 1.0e-6), \
-                                      (1.0, 1.0e-8)  ], 
+          config={}, 
           batches_per_epoch=16,
           min_batch_size=256,
           # callback function and when to call it
@@ -252,11 +283,19 @@ def train(description,
           callback_epochs=[],      # call after what epochs, e.g. [5, 20]
           improving_limit = 100):     
               
+    log_interval = 1
+    # one-cycle learning rate schedule
+    learning_rate_schedule = config.get("learning_rate_schedule", None)
+    learning_rate = config.get("learning_rate", None)
+    assert learning_rate_schedule or learning_rate
+    #learning_rate_schedule = [(0.0, 1.0e-8), (0.2, 0.1), (0.6, 0.01), (0.9, 1.0e-6), (1.0, 1.0e-8)]
     # batching
     batch_size = max(min_batch_size, approximator.m // batches_per_epoch)
+    config["batch_size"] = batch_size
     
     # one-cycle learning rate sechedule
-    lr_schedule_epochs, lr_schedule_rates = zip(*learning_rate_schedule)
+    if learning_rate_schedule :
+        lr_schedule_epochs, lr_schedule_rates = zip(*learning_rate_schedule)
             
     # reset
     if reinit:
@@ -266,20 +305,22 @@ def train(description,
     if callback and 0 in callback_epochs:
         callback(approximator, 0)
     
-    #import pickle
-    #import copy
-    #tmp_best_model_path = './best-model-tmp.h5'
+    import pickle
+    tmp_best_model_path = './best-model-tmp.pkl'
     stats = {}
     stats['train_yloss'] = []
     stats['train_dyloss'] = []
     best_loss = float('inf')
     counter = 1
+    start_time = time.time()
+    total_time = 0
 
     # loop on epochs, with progress bar (tqdm)
     for epoch in tqdm_notebook(range(epochs), desc=description):
         
         # interpolate learning rate in cycle
-        learning_rate = np.interp(epoch / epochs, lr_schedule_epochs, lr_schedule_rates)
+        if learning_rate_schedule :
+            learning_rate = np.interp(epoch / epochs, lr_schedule_epochs, lr_schedule_rates)
         
         # train one epoch
         
@@ -322,8 +363,14 @@ def train(description,
                              tf.losses.mean_squared_error(approximator.y, predictions), 
                              tf.losses.mean_squared_error(approximator.dy_dx, deltas)]
                             )
-            print('Epoch {}: y loss scaled : {}, dy loss _scaled : {}'.format(epoch, loss[0], loss[1]))
-            print()
+            if epoch % log_interval == 0 :
+                elapsed = time.time() - start_time
+                elapsed = elapsed * 1000 / log_interval
+                total_time += elapsed 
+                print('ms/epoch {:5.2f} | lr {:02.9f}'.format(elapsed, learning_rate))
+                start_time = time.time()
+                print('Epoch {}: y loss scaled : {}, dy loss _scaled : {}'.format(epoch, loss[0], loss[1]))
+                print()
 
             y = approximator.y*approximator.y_std + approximator.y_mean
             predictions = predictions*approximator.y_std + approximator.y_mean
@@ -335,23 +382,25 @@ def train(description,
                              tf.losses.mean_squared_error(y, predictions), 
                              tf.losses.mean_squared_error(dydx, deltas)]
                             )
-            print('y loss no scaled : {}, dy loss no scaled : {}'.format(loss[0], loss[1]))
-            print()
-            print()
+            if epoch % log_interval == 0 :
+                print('y loss no scaled : {}, dy loss no scaled : {}'.format(loss[0], loss[1]))
+                print()
+                print()
 
             stats['train_yloss'].append(loss[0])
             stats['train_dyloss'].append(loss[1])
 
-
             if loss[0] < best_loss :
                 best_loss = loss[0]
                 counter = 1
-                #a = approximator.session
-                #approximator.session = None
                 #pickle.dump(approximator, open(tmp_best_model_path, 'wb'))
                 #torch.save(approximator, tmp_best_model_path)
-                #a = copy.deepcopy(approximator)
-                #approximator.session = a
+                
+                weights = approximator.session.run(approximator.weights_and_biases[0][1:])
+                bias = approximator.session.run(approximator.weights_and_biases[1][1:])
+                weights_and_biases = (weights, bias)  
+                pickle.dump(weights_and_biases, open(tmp_best_model_path, 'wb'))              
+            
             else :
                 counter += 1
 
@@ -362,9 +411,28 @@ def train(description,
     if callback and epochs in callback_epochs:
         callback(approximator, epochs)     
 
+    print('total time : %d ms' % total_time)
     #approximator = pickle.load(open(tmp_best_model_path, 'rb'))
     #approximator = torch.load(tmp_best_model_path)
 
+    weights_and_biases = pickle.load(open(tmp_best_model_path, 'rb'))
+    os.remove(tmp_best_model_path)
+    approximator.assign_parameters(weights_and_biases)
+    
+    if config.get("dump_path", None) :
+        dump_path = config.get("dump_path")
+
+        if not os.path.exists(dump_path):
+            os.makedirs(dump_path)
+
+        try :
+            epoch += 1
+        except NameError : # name 'epoch' is not defined
+            epoch = 0
+
+        pickle.dump({"weights_and_biases" : weights_and_biases, "siren" : approximator.siren}, 
+                    open(os.path.join(dump_path, get_filename(config = config, epoch = epoch, ext = "pkl")), 'wb'))
+    
     return stats
 
 ## Data normalization
@@ -421,7 +489,10 @@ class Neural_Approximator():
                 lam,                # balance cost between values and derivs  
                 hidden_units, 
                 hidden_layers, 
-                weight_seed):
+                activation_function, deriv_activation_function,
+                weight_seed,
+                weights_and_biases_initializer = None,
+                first_omega_0 = 1., hidden_omega_0 = 1., outermost_linear = True):
         
         # first, deal with tensorflow logic
         if self.session is not None:
@@ -443,8 +514,11 @@ class Neural_Approximator():
                 self.derivs_predictions, \
                 self.learning_rate, \
                 self.loss, \
-                self.minimizer \
-                = vanilla_training_graph(self.n, hidden_units, hidden_layers, weight_seed)
+                self.minimizer, \
+                self.weights_and_biases \
+                = vanilla_training_graph(self.n, hidden_units, hidden_layers, activation_function, 
+                                         deriv_activation_function, weight_seed, weights_and_biases_initializer,
+                                         first_omega_0, hidden_omega_0, outermost_linear)
                     
             else:
             # differential
@@ -462,9 +536,11 @@ class Neural_Approximator():
                 self.derivs_predictions, \
                 self.learning_rate, \
                 self.loss, \
-                self.minimizer = diff_training_graph(self.n, hidden_units, \
-                                                     hidden_layers, weight_seed, \
-                                                     self.alpha, self.beta, self.lambda_j)
+                self.minimizer, \
+                self.weights_and_biases = diff_training_graph(self.n, hidden_units, \
+                                                     hidden_layers, activation_function, deriv_activation_function, weight_seed, \
+                                                     self.alpha, self.beta, self.lambda_j, weights_and_biases_initializer,
+                                                     first_omega_0, hidden_omega_0, outermost_linear)
                 
         
             # global initializer
@@ -473,7 +549,25 @@ class Neural_Approximator():
         # done
         self.graph.finalize()
         self.session = tf.Session(graph=self.graph)
-                        
+    
+    def assign_parameters(self, weights_and_biases):
+        """
+        weights, biases = self.weights_and_biases
+        assign_ops = []
+        for i, (w, b) in enumerate(zip(*weights_and_biases)) :
+            assign_ops.append(weights[i+1].assign(w))
+            assign_ops.append(biases[i+1].assign(b))
+        self.session.run(assign_ops)
+        """
+        weights, biases = weights_and_biases
+        weights_initializer = [tf.constant_initializer(w) for w in weights]
+        biases_initializer = [tf.constant_initializer(b) for b in biases]
+        weights_and_biases_initializer = (weights_initializer, biases_initializer)
+        #self.r.append(weights_and_biases_initializer)
+        self.build_graph(*self.r, weights_and_biases_initializer, *self.siren)
+        self.session.run(self.initializer)
+        self.parameters = weights_and_biases
+
     # prepare for training with m examples, standard or differential
     def prepare(self, 
                 m, 
@@ -482,34 +576,35 @@ class Neural_Approximator():
                 # standard architecture
                 hidden_units=20, 
                 hidden_layers=4, 
-                weight_seed=None):
+                activation_function = tf.nn.softplus,
+                deriv_activation_function = tf.nn.sigmoid,
+                weight_seed = None,
+                weights_and_biases_initializer = None,
+                first_omega_0 = 1., hidden_omega_0 = 1., outermost_linear = True):
 
         # prepare dataset
         if self.normalize : 
             self.x_mean, self.x_std, self.x, self.y_mean, self.y_std, self.y, self.dy_dx, self.lambda_j = \
                 normalize_data(self.x_raw, self.y_raw, self.dydx_raw, m)
         else :
-
             self.x_mean, self.x_std, self.x = np.zeros_like(self.x_raw[0]), np.ones_like(self.x_raw[0]), self.x_raw
             self.y_mean, self.y_std, self.y = np.zeros_like(self.y_raw[0]), np.ones_like(self.y_raw[0]), self.y_raw
             self.dy_dx, self.lambda_j = self.dydx_raw, 1.
         
         # build graph        
         self.m, self.n = self.x.shape      
-        self.build_graph(differential, lam, hidden_units, hidden_layers, weight_seed)
+        self.build_graph(differential, lam, hidden_units, hidden_layers, activation_function, deriv_activation_function, weight_seed, 
+                         weights_and_biases_initializer, first_omega_0, hidden_omega_0, outermost_linear)
+        self.r = [differential, lam, hidden_units, hidden_layers, activation_function, deriv_activation_function, weight_seed] 
+        self.siren = [first_omega_0, hidden_omega_0, outermost_linear]
         
     def train(self,            
               description="training",
               # training params
               reinit=True, 
               epochs=100, 
-              # one-cycle learning rate schedule
-              learning_rate_schedule=[
-                  (0.0, 1.0e-8), 
-                  (0.2, 0.1), 
-                  (0.6, 0.01), 
-                  (0.9, 1.0e-6), 
-                  (1.0, 1.0e-8)], 
+              #config = {"learning_rate_schedule" : [(0.0, 1.0e-8), (0.2, 0.1), (0.6, 0.01), (0.9, 1.0e-6), (1.0, 1.0e-8)]}, 
+              config = {},
               batches_per_epoch=16,
               min_batch_size=256,
               # callback and when to call it
@@ -517,13 +612,13 @@ class Neural_Approximator():
               callback=None,           # arbitrary callable
               callback_epochs=[],     # call after what epochs, e.g. [5, 20]
               improving_limit =  float("inf")):     
-              
-        self.stats['differential' if self.differential else "normal"]  = train(
+        
+        self.stats['differential' if self.differential else "normal"] = train(
               description, 
               self, 
               reinit, 
               epochs, 
-              learning_rate_schedule, 
+              config, 
               batches_per_epoch, 
               min_batch_size,
               callback, 
@@ -621,7 +716,31 @@ def test(generator,
          epochs=100,
          normalize = True,
          improving_limit = float("inf"),
-         min_batch_size = 256):
+         min_batch_size = 256,
+         config = {}):
+  
+    init_weights = config["init_weights"]
+    first_omega_0 = config.get("first_omega_0", 1.) 
+    hidden_omega_0 = config.get("hidden_omega_0", 1.)
+    outermost_linear = config.get("outermost_linear", True)
+    activation_function = config.get("activation_function", None)
+    if activation_function == None :
+        activation_function = deriv_activation_function = lambda x : x
+    else :
+        deriv_activation_function = config["deriv_activation_function"]
+
+    weights_and_biases_initializer = None
+    if init_weights :
+        hidden_units, hidden_layers = generator_kwargs["hidden_units"], generator_kwargs["hidden_layers"]
+        
+        a = 1/config["input_dim"]
+        weights_initializer = [RandomUniform.from_config(RandomUniform(-a, a).get_config())]
+        a = np.sqrt(6 / hidden_units) / hidden_omega_0
+        weights_initializer +=  [RandomUniform.from_config(RandomUniform(-a, a).get_config())]*hidden_layers
+
+        biases_initializer = [bias_initializer()]*(hidden_layers + 1)
+        
+        weights_and_biases_initializer = (weights_initializer, biases_initializer)
 
     # simulation
     print("simulating training, valid and test sets")
@@ -640,7 +759,7 @@ def test(generator,
     print("initializing neural appropximator")
     regressor = Neural_Approximator(xTrain, yTrain, dydxTrain, normalize = normalize)
     print("done")
-    
+    model_name = str(config.get("model_name", "unk"))
     predvalues = {}    
     preddeltas = {}
 
@@ -653,10 +772,17 @@ def test(generator,
     for size in sizes:        
             
         print("\nsize %d" % size)
-        regressor.prepare(m = size, differential= False, weight_seed = weightSeed, **generator_kwargs)
+        regressor.prepare(m = size, differential= False, activation_function = activation_function, 
+                            deriv_activation_function = deriv_activation_function, 
+                            weight_seed = weightSeed, **generator_kwargs,
+                            weights_and_biases_initializer = weights_and_biases_initializer, 
+                            first_omega_0 = first_omega_0, hidden_omega_0 = hidden_omega_0, 
+                            outermost_linear = outermost_linear)
             
         t0 = time.time()
-        regressor.train("standard training", epochs=epochs, improving_limit = improving_limit, min_batch_size = min_batch_size)
+        config["model_name"] = "twin_net_tf_normal_" + model_name
+        regressor.train("standard training", epochs=epochs, improving_limit = improving_limit, min_batch_size = min_batch_size,
+                        config = config)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("standard", size)] = predictions
         preddeltas[("standard", size)] = deltas[:, deltidx]
@@ -668,10 +794,16 @@ def test(generator,
             dic_loss['standard_loss']["yloss"].append(loss[0])
             dic_loss['standard_loss']["dyloss"].append(loss[1])
 
-        regressor.prepare(m = size, differential = True, weight_seed = weightSeed, **generator_kwargs)
+        regressor.prepare(m = size, differential = True, activation_function = activation_function, 
+                            deriv_activation_function = deriv_activation_function, 
+                            weight_seed = weightSeed, **generator_kwargs,
+                            weights_and_biases_initializer = weights_and_biases_initializer,
+                            first_omega_0 = first_omega_0, hidden_omega_0 = hidden_omega_0, outermost_linear = outermost_linear)
             
         t0 = time.time()
-        regressor.train("differential training", epochs=epochs, improving_limit = improving_limit, min_batch_size = min_batch_size)
+        config["model_name"] = "twin_net_tf_differential_" + model_name
+        regressor.train("differential training", epochs=epochs, improving_limit = improving_limit, min_batch_size = min_batch_size,
+                        config = config)
         predictions, deltas = regressor.predict_values_and_derivs(xTest)
         predvalues[("differential", size)] = predictions
         preddeltas[("differential", size)] = deltas[:, deltidx]

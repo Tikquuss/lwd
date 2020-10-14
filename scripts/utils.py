@@ -13,6 +13,7 @@ import random
 import os 
 import itertools
 import time
+import datetime
 
 #from twin_net_tf import normalize_data
 
@@ -409,14 +410,31 @@ class Siren(MLP):
             self.net[-1] = Linear(hidden_features, out_features, True, torch.sin, torch.cos)
 
         # init_weights
-        with torch.no_grad():
-            self.net[0].linear.weight.uniform_(-1 / in_features, 1 / in_features)      
-            
-            for l in range(1, len(self.net)) :
-                self.net[l].linear.weight.uniform_(-np.sqrt(6 / hidden_features) / hidden_omega_0, 
-                                                    np.sqrt(6 / hidden_features) / hidden_omega_0)
+        if not init_weights :
+            with torch.no_grad():
+                self.net[0].linear.weight.uniform_(-1 / in_features, 1 / in_features)      
+                
+                for l in range(1, len(self.net)) :
+                    self.net[l].linear.weight.uniform_(-np.sqrt(6 / hidden_features) / hidden_omega_0, 
+                                                        np.sqrt(6 / hidden_features) / hidden_omega_0)
+        else :
+            with torch.no_grad():
+                self.net[-1].linear.weight.uniform_(-np.sqrt(6 / hidden_features) / hidden_omega_0, 
+                                                     np.sqrt(6 / hidden_features) / hidden_omega_0)
 
-def train(name, model, dataloader, optimizer, criterion, config, with_derivative, max_epoch, improving_limit = float('inf'), metric = "train_loss"):
+def get_filename(config, epoch, ext):
+    file_name = "_".join([
+                            config.get("function_name", "unk_func"),
+                            config.get("model_name", "unk_model"),
+                            str(config.get("nTrain", "none")), "train_examples",
+                            str(epoch), "num_epochs",
+                            str(config.get("batch_size", "none")), "batch_size",
+                            datetime.datetime.today().strftime('%d_%m_%Y')
+                        ])    
+    file_name += "."+ext
+    return file_name
+
+def train(name, model, dataloader, optimizer, criterion, config, with_derivative, max_epoch, improving_limit = float('inf'), metric = "train_yloss"):
     """basic training scheme"""
     assert name in ["net", "twin_net"]
 
@@ -442,6 +460,8 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
     if with_derivative :
         assert metric in ["train_loss", "train_yloss", "train_dyloss"]
     else :
+        if metric == "train_yloss" :
+            metric = "train_loss"
         assert metric == "train_loss"
 
     len_dl = len(dataloader)
@@ -627,6 +647,20 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
     model.load_state_dict(torch.load(tmp_best_model_path))
     os.remove(tmp_best_model_path)
     
+    # save the model
+    if config.get("dump_path", None) :
+        dump_path = config.get("dump_path")
+
+        if not os.path.exists(dump_path):
+            os.makedirs(dump_path)
+
+        try :
+            epoch += 1
+        except NameError : # name 'epoch' is not defined
+            epoch = 0
+        
+        torch.save(model.state_dict(), os.path.join(dump_path, get_filename(config = config, epoch = epoch, ext = "pth")))
+        
     return model, stats, best_loss
     
 def test(name, model, dataloader, criterion, config, with_derivative):
