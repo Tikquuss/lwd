@@ -125,7 +125,8 @@ This parameter was introduced for this purpose, and remains optional (so you can
 learning_rate_schedule = [(0.0, 1.0e-8), (0.2, 0.1), (0.6, 0.01), (0.9, 1.0e-6), (1.0, 1.0e-8)]
 if not learning_rate_schedule is None :
     config["learning_rate_schedule"] = learning_rate_schedule
-```
+```  
+
 ### **Model**
 
 * *Parameters of the model*
@@ -179,11 +180,25 @@ optimizer = torch.optim.Adam(model.parameters(), lr = learning_rate)
 criterion = torch.nn.MSELoss()
 ```
 ### **Training, visualization of training statistics and testing**
+If you want to save the best model obtained during training.
 ```python
-from utils import train, plot_stat, test
-
 name = "net" # for normal and sobolev training, "twin_net" for twin_net (do not specify any other value than the last two)
 #name = "twin_net" # for twin_net (do not specify any other value than the last two)
+
+config["dump_path"] = "/content" # folder in which the models will be stored (left to None/False/0/"" if we don't want to save the models)
+config["function_name"] = ""
+model_name = name # 'net', 'twin_net'
+if name == "net" :
+    model_name = "normal" if not with_derivative else "sobolev"
+model_name += "-norm" if normalize else ""
+model_name += "-lrs" if learning_rate_schedule else ""
+config["model_name"] = model_name
+config["nTrain"] = nTrain
+config["batch_size"] = batch_size
+```
+
+```python
+from utils import train, plot_stat, test
 
 # with_derivative = False # for normal training
 with_derivative = True # for sobolev training and twin_net 
@@ -193,9 +208,7 @@ improving_limit = float("inf") # Stop training if the training loss does not dec
 
 model, stats, best_loss = train(
     name, model, train_dataloader, 
-	optimizer, 
-	criterion, 
-	config, 
+    optimizer, criterion, config, 
     with_derivative, max_epoch = max_epoch, 
     improving_limit = improving_limit
 )
@@ -301,8 +314,27 @@ generator = Generator(callable_function = STFunction,
 ```
 ### **Training, testing and visualization of training statistics**
 ```python
+import tensorflow.keras as K
+tf_config = {"init_weights" : init_weights, "input_dim" : OUTPUT_DIM}
+tf_config.update({"activation_function" : K.activations.softplus, "deriv_activation_function" : K.activations.sigmoid})
+
+config = {}
+config["learning_rate_schedule"] = learning_rate_schedule
+config["learning_rate"] = learning_rate
+config.update({key : value for key, value in loss_config.items() if value})
+config.update(tf_config)
+config["dump_path"] = ""
+config["function_name"] = "" 
+model_name = ""
+model_name += "-norm" if normalize else ""
+model_name += "-lrs" if learning_rate_schedule else ""
+config["model_name"] = ""
+config["nTrain"] = nTrain
+config["batch_size"] = batch_size
+
+```
+```python
 from twin_net_tf import test as twin_net_tf_test 
-from twin_net_tf_siren import test as twin_net_tf_test_siren
 from utils import plot_stat
 
 siren = True # set to True if you want to use siren as backbone
@@ -321,36 +353,32 @@ max_epoch = 2 # maximun number of epoch
 improving_limit = float("inf") # Stop training if the training loss does not decrease n times (no limit here)
 
 if siren :
+    
     first_omega_0 = 30.
     hidden_omega_0 = 30.
     outermost_linear = True
-    loss, regressor, dtrain, dtest, dydxTest, values, deltas = twin_net_tf_test_siren(
-              generator, [nTrain], 
-              nTrain, nTest, 
-              trainSeed = train_seed, testSeed = test_seed, weightSeed = 0, 
-              deltidx=0,
-              generator_kwargs = generator_kwargs,
-              epochs = max_epoch,
-              first_omega_0 = first_omega_0, 
-              hidden_omega_0 = hidden_omega_0, 
-              outermost_linear = outermost_linear,
-              improving_limit = improving_limit,
-              min_batch_size = batch_size
-          )
-else :
-    loss, regressor, dtrain, dtest, dydxTest, values, deltas = twin_net_tf_test(
-              generator, [nTrain], 
-              nTrain, nTest, 
-              trainSeed = train_seed, testSeed = test_seed, weightSeed = 0, 
-              deltidx = 0,
-              generator_kwargs = generator_kwargs,
-              epochs = max_epoch,
-              improving_limit = improving_limit,
-              min_batch_size = batch_size
-          )
+    config.update({"first_omega_0" : first_omega_0, 
+               "hidden_omega_0": hidden_omega_0, 
+                "outermost_linear" : outermost_linear})
+            
+    config["activation_function"] = tf.math.sin
+    config["deriv_activation_function"] = tf.math.cos
 
-plot_stat(regressor.stats["normal"], with_derivative = with_derivative)
-plot_stat(regressor.stats["differential"], with_derivative = with_derivative)
+    
+loss, regressor, dtrain, dtest, dydxTest, values, deltas = twin_net_tf_test(
+    generator, [nTrain], 
+    nTrain, nTest, 
+    trainSeed = train_seed, testSeed = test_seed, weightSeed = 0, 
+    deltidx = 0,
+    generator_kwargs = generator_kwargs,
+    epochs = max_epoch,
+    improving_limit = improving_limit,
+    min_batch_size = batch_size,
+    config = config
+)
+
+plot_stat(regressor.stats["normal"], with_derivative = True)
+plot_stat(regressor.stats["differential"], with_derivative = True)
 ```
 If you are in dimension 2 and want to visualize the curves produced by your models :
 ```python
@@ -389,7 +417,6 @@ generator = BlackScholes() # or Bachelier(n = INPUT_DIM) for Bachelier dimension
 ```
 ```python
 from twin_net_tf import test as twin_net_tf_test 
-from twin_net_tf_siren import test as twin_net_tf_test_siren
 from utils import plot_stat
 
 siren = True # set to True if you want to use siren as backbone
@@ -411,30 +438,23 @@ if siren :
     first_omega_0 = 30.
     hidden_omega_0 = 30.
     outermost_linear = True
-    dic_loss, regressor, dtrain, dtest, dydxTest, values, deltas, xAxis, vegas = twin_net_tf_test_siren(
-              generator, [nTrain], 
-              nTrain, nTest, 
-              trainSeed = train_seed, testSeed = test_seed, weightSeed = 0, 
-              deltidx=0,
-              generator_kwargs = generator_kwargs,
-              epochs = max_epoch,
-              first_omega_0 = first_omega_0, 
-              hidden_omega_0 = hidden_omega_0, 
-              outermost_linear = outermost_linear,
-              improving_limit = improving_limit,
-              min_batch_size = batch_size
-          )
-else :
-    dic_loss, regressor, dtrain, dtest, dydxTest, values, deltas, xAxis, vegas = twin_net_tf_test(
-              generator, [nTrain], 
-              nTrain, nTest, 
-              trainSeed = train_seed, testSeed = test_seed, weightSeed = 0, 
-              deltidx = 0,
-              generator_kwargs = generator_kwargs,
-              epochs = max_epoch,
-              improving_limit = improving_limit,
-              min_batch_size = batch_size
-          )
+    config.update({"first_omega_0" : first_omega_0, 
+               "hidden_omega_0": hidden_omega_0, 
+                "outermost_linear" : outermost_linear})
+            
+    config["activation_function"] = tf.math.sin
+    config["deriv_activation_function"] = tf.math.cos
+
+dic_loss, regressor, dtrain, dtest, dydxTest, values, deltas, xAxis, vegas = twin_net_tf_test(
+    generator, [nTrain], 
+    nTrain, nTest, 
+    trainSeed = train_seed, testSeed = test_seed, weightSeed = 0, 
+    deltidx = 0,
+    generator_kwargs = generator_kwargs,
+    epochs = max_epoch,
+    improving_limit = improving_limit,
+    min_batch_size = batch_size
+)
 
 plot_stat(regressor.stats["normal"], with_derivative = with_derivative)
 plot_stat(regressor.stats["differential"], with_derivative = with_derivative)

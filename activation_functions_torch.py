@@ -27,6 +27,7 @@ activation_function, deriv_activation_function = g, lambda x : g(x)*(1-g(x))
 # Parameterised ReLU (formula : https://pytorch.org/docs/stable/nn.functional.html#prelu)
 def prelu(a = 0.01):
     def f(x):
+        # return torch.relu(x) + a * (x - abs(x))*0.5
         return F.prelu(input = x, weight = torch.tensor(a))
     return f
 def prelu_deriv(a = 0.01):
