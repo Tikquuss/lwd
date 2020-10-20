@@ -832,14 +832,17 @@ def reshape(dic, nTrains) :
                     sd[nTrain][key1][key2] = {}
                     for key3 in keys3 :
                         try :
-                            sd[nTrain][key1][key2][key3] = dic[key1][key2][key3][i]
+                            sd[nTrain][key1][key2][key3] = [
+                                                            dic[key1][key2][key3][k][i] 
+                                                            for k in range(len(dic[key1][key2][key3]))
+                                                            ]
                         except (KeyError, TypeError, IndexError) :
                             pass
         return sd
     else :
         return dic
 
-def global_stat(stats_dic, suptitle = ""):
+def global_stat(stats_dic, suptitle = "", n_samples : str = ""):
     global keys1, keys2, keys3, keys4, keys5
 
     # keys4 keys3 keys5 keys1 keys2
@@ -869,7 +872,7 @@ def global_stat(stats_dic, suptitle = ""):
                           pass        
                         
                     ax[i][j].set(xlabel = 'epoch' if i != 0 else "", ylabel = key5)
-                    ax[i][j].set_title('%s per epoch %s' % (key5 if i != 1 else "", '' if key4==0 else "-lr_scheduler"))
+                    ax[i][j].set_title('%s per epoch %s' % (key5 if i != 1 else "", '' if key4==0 else "-lr_scheduler")+"-"+n_samples)
                     ax[i][j].legend()
                     #ax[i][j].label_outer() # Hide x labels and tick labels for top plots and y ticks for right plots.     
 
@@ -926,7 +929,7 @@ def to_csv(dico, csv_path, n_samples : str = "", mode : str = 'a+'):
                         
                         except (KeyError, TypeError) : # 'train_yloss', 'NoneType' object is not subscriptable
                             for key3_tmp in key3_tmps :
-                                result[key4][key3_tmp][key] = "RAS"
+                                result[key4][key3_tmp][key] = "---"
                     except IndexError :
                           pass       
 

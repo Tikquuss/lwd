@@ -55,11 +55,13 @@ def vanilla_net(
     
     # set seed
     tf.set_random_seed(seed)
+
     if weights_and_biases_initializer == None :
         weights_initializer = [tf.zeros_initializer()]*(hidden_layers + 1)
         biases_initializer = [tf.variance_scaling_initializer()]*(hidden_layers + 1)
     else :
         weights_initializer, biases_initializer = weights_and_biases_initializer
+
     # input layer
     xs = tf.placeholder(shape=[None, input_dim], dtype=real_type)
     
@@ -74,11 +76,9 @@ def vanilla_net(
     
     # first hidden layer (index 1)
     # weight matrix
-    ws.append(tf.get_variable("w1", [input_dim, hidden_units], \
-        initializer = weights_initializer[0], dtype=real_type))
+    ws.append(tf.get_variable("w1", [input_dim, hidden_units], initializer = weights_initializer[0], dtype = real_type))
     # bias vector
-    bs.append(tf.get_variable("b1", [hidden_units], \
-        initializer = biases_initializer[0], dtype=real_type))
+    bs.append(tf.get_variable("b1", [hidden_units], initializer = biases_initializer[0], dtype = real_type))
     # graph
     z = first_omega_0 * ws[1]
     zs.append(zs[0] @ z + bs[1]) # eq. 3, l=1
@@ -86,19 +86,15 @@ def vanilla_net(
     
     # second hidden layer (index 2) to last (index hidden_layers)
     for l in range(1, hidden_layers): 
-        ws.append(tf.get_variable("w%d"%(l+1), [hidden_units, hidden_units], \
-            initializer = weights_initializer[l], dtype=real_type))
-        bs.append(tf.get_variable("b%d"%(l+1), [hidden_units], \
-            initializer = biases_initializer[l], dtype=real_type))
+        ws.append(tf.get_variable("w%d"%(l+1), [hidden_units, hidden_units], initializer = weights_initializer[l], dtype = real_type))
+        bs.append(tf.get_variable("b%d"%(l+1), [hidden_units], initializer = biases_initializer[l], dtype = real_type))
         z = hidden_omega_0*ws[l+1] 
         zs.append(activation_function(zs[l]) @ z + bs[l+1]) # eq. 3, l=2..L-1
         omega_0.append(hidden_omega_0)
 
     # output layer (index hidden_layers+1)
-    ws.append(tf.get_variable("w"+str(hidden_layers+1), [hidden_units, 1], \
-            initializer = weights_initializer[hidden_layers], dtype=real_type))
-    bs.append(tf.get_variable("b"+str(hidden_layers+1), [1], \
-        initializer = biases_initializer[hidden_layers], dtype=real_type))
+    ws.append(tf.get_variable("w"+str(hidden_layers+1), [hidden_units, 1], initializer = weights_initializer[hidden_layers], dtype = real_type))
+    bs.append(tf.get_variable("b"+str(hidden_layers+1), [1], initializer = biases_initializer[hidden_layers], dtype = real_type))
     # eq. 3, l=L
     z = hidden_omega_0*ws[hidden_layers+1]
     if outermost_linear :
@@ -283,7 +279,7 @@ def train(description,
           callback_epochs=[],      # call after what epochs, e.g. [5, 20]
           improving_limit = 100):     
               
-    log_interval = 1
+    log_interval = config.get("log_interval", 1)
     # one-cycle learning rate schedule
     learning_rate_schedule = config.get("learning_rate_schedule", None)
     learning_rate = config.get("learning_rate", None)
@@ -412,26 +408,34 @@ def train(description,
         callback(approximator, epochs)     
 
     print('total time : %d ms' % total_time)
-    #approximator = pickle.load(open(tmp_best_model_path, 'rb'))
-    #approximator = torch.load(tmp_best_model_path)
 
-    weights_and_biases = pickle.load(open(tmp_best_model_path, 'rb'))
-    os.remove(tmp_best_model_path)
-    approximator.assign_parameters(weights_and_biases)
-    
-    if config.get("dump_path", None) :
-        dump_path = config.get("dump_path")
+    try :
+        #approximator = pickle.load(open(tmp_best_model_path, 'rb'))
+        #approximator = torch.load(tmp_best_model_path)
 
-        if not os.path.exists(dump_path):
-            os.makedirs(dump_path)
+        weights_and_biases = pickle.load(open(tmp_best_model_path, 'rb'))
+        os.remove(tmp_best_model_path)
+        approximator.assign_parameters(weights_and_biases)
+        
+        if config.get("dump_path", None) :
+            dump_path = config.get("dump_path")
 
-        try :
-            epoch += 1
-        except NameError : # name 'epoch' is not defined
-            epoch = 0
+            if not os.path.exists(dump_path):
+                os.makedirs(dump_path)
 
-        pickle.dump({"weights_and_biases" : weights_and_biases, "siren" : approximator.siren}, 
-                    open(os.path.join(dump_path, get_filename(config = config, epoch = epoch, ext = "pkl")), 'wb'))
+            try :
+                epoch += 1
+            except NameError : # name 'epoch' is not defined
+                epoch = 0
+
+            pickle.dump({"weights_and_biases" : weights_and_biases, "siren" : approximator.siren}, 
+                        open(os.path.join(dump_path, get_filename(config = config, epoch = epoch, ext = "pkl")), 'wb'))
+
+    except FileNotFoundError : # [Errno 2] No such file or directory: './best-model-tmp.pkl'
+        """
+        This error usually occurs when the loss has stayed/graded to nan (not a number) during training.
+        """
+        pass
     
     return stats
 
