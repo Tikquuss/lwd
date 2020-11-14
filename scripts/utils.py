@@ -434,7 +434,8 @@ def get_filename(config, epoch, ext):
     file_name += "."+ext
     return file_name
 
-def train(name, model, dataloader, optimizer, criterion, config, with_derivative, max_epoch, improving_limit = float('inf'), metric = "train_yloss"):
+def train(name, model, dataloader, optimizer, criterion, config, with_derivative, max_epoch, 
+            improving_limit = float('inf'), metric = "train_yloss", val_dataloader = None):
     """basic training scheme"""
     assert name in ["net", "twin_net"]
 
@@ -551,12 +552,21 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
             stats['train_yloss'].append(r_y_no_scaled)
             stats['train_dyloss'].append(r_dydx_no_scaled)
 
-            if stats[metric][-1] < best_loss :
-                best_loss = stats[metric][-1]
-                counter = 1
-                torch.save(model.state_dict(), tmp_best_model_path)
+            if val_dataloader is not None :
+                l, l_y, l_dy = eval(name, model, val_dataloader, criterion, config, with_derivative)
+                if l_y < best_loss :
+                    best_loss = l_y
+                    counter = 1
+                    torch.save(model.state_dict(), tmp_best_model_path)
+                else :
+                    counter += 1
             else :
-                counter += 1
+                if stats[metric][-1] < best_loss :
+                    best_loss = stats[metric][-1]
+                    counter = 1
+                    torch.save(model.state_dict(), tmp_best_model_path)
+                else :
+                    counter += 1
             
             if epoch % log_interval == 0 :
                 elapsed = time.time() - start_time
@@ -621,13 +631,34 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
 
             stats[metric].append(running_loss_no_scaled)
 
-            if stats[metric][-1] < best_loss :
-                best_loss = stats[metric][-1]
+            if val_dataloader is not None :
+                l, l_y, l_dy = eval(name, model, val_dataloader, criterion, config, with_derivative)
+                if l_y < best_loss :
+                    best_loss = l_y
+                    counter = 1
+                    torch.save(model.state_dict(), tmp_best_model_path)
+                else :
+                    counter += 1
+            else :
+                if stats[metric][-1] < best_loss :
+                    best_loss = stats[metric][-1]
+                    counter = 1
+                    torch.save(model.state_dict(), tmp_best_model_path)
+                else :
+                    counter += 1
+
+            """
+            l, l_y, l_dy = eval(name, model, val_dataloader, criterion, config, with_derivative)
+            if l_y < best_loss :
+                best_loss = l_y
+            #if stats[metric][-1] < best_loss :
+            #    best_loss = stats[metric][-1]
                 counter = 1
                 torch.save(model.state_dict(), tmp_best_model_path)
             else :
                 counter += 1
-            
+            """
+
             if epoch % log_interval == 0 :
                 elapsed = time.time() - start_time
                 elapsed = elapsed * 1000 / log_interval
@@ -663,6 +694,120 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
         
     return model, stats, best_loss
     
+def eval(name, model, dataloader, criterion, config, with_derivative) :
+    """validation"""
+    assert name in ["net", "twin_net"]
+    assert all([model, dataloader, criterion])
+
+    description = config.get("description", "eval...")
+    x_mean, x_std = config.get("x_mean", 0.), config.get("x_std", 1.)
+    y_mean, y_std = config.get("y_mean", 0.), config.get("y_std", 1.)
+    lam = 1.0
+    alpha, beta = config["get_alpha_beta"](lam)
+    alpha, beta = config.get("alpha", alpha), config.get("beta", beta)
+    lambda_j = config.get("lambda_j", 1.0)
+    
+    len_dl = len(dataloader)
+    assert len_dl
+
+    model.eval()
+
+    if with_derivative :
+        running_loss, r_y, r_dydx = 0, 0, 0
+        r_y_no_scaled, r_dydx_no_scaled = 0, 0
+        
+        for batch in tqdm_notebook(dataloader, desc=description) :
+              
+            x, y, dydx = batch
+            x_scaled = (x-x_mean) / x_std
+            y_scaled = (y-y_mean) / y_std
+            dydx_scaled = dydx / y_std * x_std
+
+            if name == "net" :
+                # Forward pass
+                x_scaled.requires_grad_(True)
+                try :
+                    y_pred_scaled = forward(net = model.net, x = x_scaled)
+                except RuntimeError : # Expected object of scalar type Double but got scalar type Float for argument #3 'mat2' in call to _th_addmm_out
+                    y_pred_scaled = forward(net = model.net, x = x_scaled.float())
+                # Compute gradient 
+                dydx_pred_scaled = gradient(y_pred_scaled, x_scaled)
+            else :
+                # Forward pass
+                try :
+                    y_pred_scaled, zs = forward(net = model.net, x = x_scaled, return_layers = True)
+                except RuntimeError : # RuntimeError: Expected object of scalar type Double but got scalar type Float for argument #3 'mat2' in call to _th_addmm_out
+                    y_pred_scaled, zs = forward(net = model.net, x = x_scaled.float(), return_layers = True)
+
+                # Compute gradient 
+                dydx_pred_scaled = backprop(net = model.net, y = y_pred_scaled, zs = zs)
+                
+            
+            y_pred = y_mean + y_std * y_pred_scaled
+            dydx_pred = y_std / x_std * dydx_pred_scaled
+
+            # Compute Loss
+            l_y = criterion(y_pred_scaled.squeeze(), y_scaled)
+            l_dydx = criterion(lambda_j * dydx_scaled, lambda_j * dydx_pred_scaled.detach())
+
+            loss = alpha * l_y + beta * l_dydx
+                
+            running_loss += loss.item()
+            r_y += l_y.item()
+            r_dydx += l_dydx.item()
+
+            l_y_no_scaled = criterion(y_pred.squeeze(), y).item()
+            l_dydx_no_scaled = criterion(dydx, dydx_pred).item()
+            r_y_no_scaled += l_y_no_scaled
+            r_dydx_no_scaled += l_dydx_no_scaled
+            
+        running_loss = running_loss/len_dl
+        r_y = r_y/len_dl
+        r_dydx = r_dydx/len_dl
+
+        r_y_no_scaled = r_y_no_scaled / len_dl
+        r_dydx_no_scaled = r_dydx_no_scaled / len_dl
+        running_loss_no_scaled = alpha * r_y_no_scaled + beta * r_dydx_no_scaled
+            
+        print('test loss: {}, y loss : {}, dydx loss : {}'.format(running_loss, r_y, r_dydx))
+        print()
+        print('test loss no scaled: {}, y loss  no scaled : {}, dydx loss  no scaled: {}'.format(
+            running_loss_no_scaled, r_y_no_scaled, r_dydx_no_scaled
+        ))
+
+        return running_loss_no_scaled, r_y_no_scaled, r_dydx_no_scaled
+
+    else :
+  
+        running_loss = 0
+        running_loss_no_scaled = 0
+
+        for batch in tqdm_notebook(dataloader, desc=description) :
+              
+            x, y = batch
+            x_scaled = (x-x_mean) / x_std
+            y_scaled = (y-y_mean) / y_std
+        
+            # Forward pass
+            y_pred_scaled = forward(net = model.net, x = x_scaled.float())
+            y_pred = y_mean + y_std * y_pred_scaled
+
+            # Compute Loss
+            loss = criterion(y_pred_scaled.squeeze(), y_scaled)
+                
+            running_loss += loss.item()
+
+            loss_no_scaled = criterion(y_pred.squeeze(), y)
+            running_loss_no_scaled += loss_no_scaled.item()
+
+                
+        running_loss = running_loss/len_dl
+        running_loss_no_scaled = running_loss_no_scaled/len_dl
+
+        print('val loss: {} val loss no scaled {}'.format(running_loss, running_loss_no_scaled))
+
+        return (running_loss_no_scaled, running_loss_no_scaled, None)
+
 def test(name, model, dataloader, criterion, config, with_derivative):
     """basic testing scheme"""
     assert name in ["net", "twin_net"]
