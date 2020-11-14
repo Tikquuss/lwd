@@ -762,6 +762,7 @@ def test(generator,
     # neural approximator
     print("initializing neural appropximator")
     regressor = Neural_Approximator(xTrain, yTrain, dydxTrain, normalize = normalize)
+    regressor_diff = Neural_Approximator(xTrain, yTrain, dydxTrain, normalize = normalize)
     print("done")
     model_name = str(config.get("model_name", "unk"))
     predvalues = {}    
@@ -798,7 +799,7 @@ def test(generator,
             dic_loss['standard_loss']["yloss"].append(loss[0])
             dic_loss['standard_loss']["dyloss"].append(loss[1])
 
-        regressor.prepare(m = size, differential = True, activation_function = activation_function, 
+        regressor_diff.prepare(m = size, differential = True, activation_function = activation_function, 
                             deriv_activation_function = deriv_activation_function, 
                             weight_seed = weightSeed, **generator_kwargs,
                             weights_and_biases_initializer = weights_and_biases_initializer,
@@ -806,9 +807,9 @@ def test(generator,
             
         t0 = time.time()
         config["model_name"] = "twin_net_tf_differential_" + model_name
-        regressor.train("differential training", epochs=epochs, improving_limit = improving_limit, min_batch_size = min_batch_size,
+        regressor_diff.train("differential training", epochs=epochs, improving_limit = improving_limit, min_batch_size = min_batch_size,
                         config = config)
-        predictions, deltas = regressor.predict_values_and_derivs(xTest)
+        predictions, deltas = regressor_diff.predict_values_and_derivs(xTest)
         predvalues[("differential", size)] = predictions
         preddeltas[("differential", size)] = deltas[:, deltidx]
         t1 = time.time()
@@ -820,9 +821,9 @@ def test(generator,
             dic_loss['differential_loss']["dyloss"].append(loss[1])
 
     if xAxis.all() :
-        return dic_loss, regressor, (xTrain, yTrain, dydxTrain), (xTest, yTest, dydxTest), dydxTest[:, deltidx], predvalues, preddeltas, xAxis, vegas
+        return dic_loss, [regressor, regressor_diff], (xTrain, yTrain, dydxTrain), (xTest, yTest, dydxTest), dydxTest[:, deltidx], predvalues, preddeltas, xAxis, vegas
     else :
-        return dic_loss, regressor, (xTrain, yTrain, dydxTrain), (xTest, yTest, dydxTest), dydxTest[:, deltidx], predvalues, preddeltas
+        return dic_loss, [regressor, regressor_diff], (xTrain, yTrain, dydxTrain), (xTest, yTest, dydxTest), dydxTest[:, deltidx], predvalues, preddeltas
      
 
 def graph(title, 
