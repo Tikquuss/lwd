@@ -9,7 +9,7 @@ def STFunction(x, d=2):
     val = 0
     for i in range(d):
         val += x[i] ** 4 - 16 * x[i] ** 2 + 5 * x[i]
-        val *= 0.5
+    val *= 0.5
     return val
   
 def STDeriv(index):
