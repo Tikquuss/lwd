@@ -42,7 +42,15 @@ def jacobian(y, x):
         jac[i] = gradient(y, x, grad_outputs = grad_outputs)
     return jac
 
-def genData(function, deriv_function, dim_x, min_x, max_x, num_samples, random_seed = 0):
+def gaussian_noise(random_seed, loc = 0.0, scale = 1.0) :
+    """https://www.kite.com/python/answers/how-to-add-noise-to-a-signal-using-numpy-in-python"""
+    def noise_f(original) :
+        np.random.seed(random_seed)
+        noise = np.random.normal(loc = loc, scale = scale, size = original.shape)
+        return noise
+    return noise_f
+
+def genData(function, deriv_function, dim_x, min_x, max_x, num_samples, random_seed = 0, noise = {}):
     """takes a :
         * function : f(x : array), return y 
         * its derivative: f'(i: int), takes i as parameter and returns another function that takes x and returns df(x)/dx[i]=dy/dx[i].
@@ -50,17 +58,30 @@ def genData(function, deriv_function, dim_x, min_x, max_x, num_samples, random_s
         * the boundaries of the domain in which the points will be generated unify the points
         * the number of examples (n) to be generated
         * and the random seed for reproducibility
+        * noise = {"get_noise_function" : gaussian_noise, "noise_params" : {'loc' : 0.0, 'scale' : 1.0} } for example
 
     and returns (xi, yi, [dydx[j], j=1...dim_x]), i = 1….n"""
     
     random.seed(random_seed)
+    if noise :
+        noise["noise_params"].update({"random_seed" : random_seed})
+        noise_function = noise["get_noise_function"](**noise["noise_params"])
+    else : 
+        noise_function = lambda x : np.zeros_like(x)
+
+    Y = []
     samples = []
     for n in range(num_samples):
         x = np.array([random.uniform(min_x, max_x) for i in range(dim_x)])
         y = function(x)
+        Y.append(y)
         dy = np.array([deriv_function(i)(x) for i in range(dim_x)])
         s = (x, y, dy)
         samples.append(s)
+        
+    Y = np.array(Y)
+    Y = Y + noise_function(Y)
+    samples = [(x, y, dy) for (x, _, dy), y in zip(samples, Y)]
     return samples
 
 def plotFunction(name, function = None, model = None, 
@@ -538,6 +559,7 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
                 loss.backward()
                 # scale all the gradient together to prevent exploding.
                 torch.nn.utils.clip_grad_norm_(model.parameters(), lr)
+                # update the model parameters
                 optimizer.step()
 
             running_loss = running_loss/len_dl
@@ -615,6 +637,7 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
                 loss.backward()
                 # scale all the gradient together to prevent exploding.
                 torch.nn.utils.clip_grad_norm_(model.parameters(), lr)
+                # update the model parameters
                 optimizer.step()
             
             running_loss = running_loss/len_dl
