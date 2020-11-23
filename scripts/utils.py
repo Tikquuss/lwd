@@ -513,7 +513,8 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
 
                 # Compute Loss
                 l_y = criterion(y_pred.squeeze(), y)
-                l_dydx = criterion(lambda_j * dydx, lambda_j * dydx_pred.detach())
+                #l_dydx = criterion(lambda_j * dydx, lambda_j * dydx_pred.detach())
+                l_dydx = criterion(lambda_j * dydx, lambda_j * dydx_pred)
 
                 loss = alpha * l_y + beta * l_dydx
                 
@@ -724,7 +725,8 @@ def test(name, model, dataloader, criterion, config, with_derivative):
 
             # Compute Loss
             l_y = criterion(y_pred_scaled.squeeze(), y_scaled)
-            l_dydx = criterion(lambda_j * dydx_scaled, lambda_j * dydx_pred_scaled.detach())
+            #l_dydx = criterion(lambda_j * dydx_scaled, lambda_j * dydx_pred_scaled.detach())
+            l_dydx = criterion(lambda_j * dydx_scaled, lambda_j * dydx_pred_scaled)
 
             loss = alpha * l_y + beta * l_dydx
                 

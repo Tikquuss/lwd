@@ -2,6 +2,10 @@ import math
 import numpy as np
 import random
 
+import jax
+import jax.numpy as jnp
+
+import torch
 
 # 1) Styblinski-Tang function : https://www.sfu.ca/~ssurjano/stybtang.html 
 
@@ -11,7 +15,15 @@ def STFunction(x, d=2):
         val += x[i] ** 4 - 16 * x[i] ** 2 + 5 * x[i]
     val *= 0.5
     return val
-  
+
+def f(x) :
+    if len(x.shape) == 1 : 
+        return 0.5 * jnp.sum(a = x**4 - 16*x**2 + 5*x)
+        #return 0.5 * torch.sum(input = x**4 - 16*x**2+5*x)
+    else : # batch
+        #return 0.5 * torch.sum(input = x**4 - 16*x**2+5*x, dim = 1)
+        return 0.5 * jnp.sum(a = x**4 - 16*x**2 + 5*x, axis = 1)
+    
 def STDeriv(index):
     def f(x):
         val = 0.5 * (4 * x[index] ** 3 - 32 * x[index] + 5)
