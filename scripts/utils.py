@@ -277,7 +277,8 @@ def forward(net, x, return_layers = False):
         for linear_layer in net :
             # zl_stilde = zl-1 @ (omega_l * wl.T) + bl 
             z = x @ (linear_layer.omega_0 * linear_layer.linear.weight.t()) + linear_layer.linear.bias 
-            zs.append(z)
+            #zs.append(z)
+            zs.append(z.detach())
             # x = g_l ( zl_stilde )
             x = linear_layer.activation_function(z) 
         return x, zs
@@ -313,7 +314,7 @@ def backprop(net, y, zs, vL = None):
                                   ), 
                           mat2 = torch.stack([linear_layer.omega_0 * linear_layer.linear.weight for i in range(n)])
                           ) # zl-1_bar = zl_bar @ g'(zl_stilde) @ wl
-        zbar.detach_()
+        #zbar.detach_()
     xbar = zbar.squeeze() # z0_bar
     return xbar
     
@@ -406,7 +407,7 @@ class MLP(nn.Module):
         self.net = nn.Sequential(*net)
 
         if init_weights :
-            # init_weights
+            # init_weights : Motivated by "Implicit Neural Representations with Periodic Activation Functions" (https://arxiv.org/abs/2006.09661).
             with torch.no_grad():
                 self.net[0].linear.weight.uniform_(-1 / in_features, 1 / in_features)      
                     
@@ -418,7 +419,8 @@ class MLP(nn.Module):
         return self.net(x)
    
 class Siren(MLP):
-    """MLP with sinus as activation, and basic weigths initialisation"""
+    """MLP with sinus as activation, and basic weigths initialisation : 
+    Implicit Neural Representations with Periodic Activation Functions (https://arxiv.org/abs/2006.09661)"""
     def __init__(self, in_features, hidden_features, hidden_layers, out_features, outermost_linear = False, 
                  first_omega_0 = 30., hidden_omega_0 = 30., init_weights = True, params_seed = 0):
         torch.manual_seed(params_seed)
@@ -530,7 +532,8 @@ def train(name, model, dataloader, optimizer, criterion, config, with_derivative
                     # Forward pass
                     y_pred, zs = forward(net = model.net, x = x, return_layers = True)
                     # Compute gradient 
-                    dydx_pred = backprop(net = model.net, y = y_pred, zs = zs)
+                    #dydx_pred = backprop(net = model.net, y = y_pred, zs = zs)
+                    dydx_pred = backprop(net = model.net, y = y_pred.detach(), zs = zs)
 
                 # Compute Loss
                 l_y = criterion(y_pred.squeeze(), y)
