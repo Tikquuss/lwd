@@ -664,13 +664,14 @@ class Neural_Approximator():
 # main class
 class Generator :
     
-    def __init__(self, callable_function, callable_function_deriv, dim_x, min_x, max_x):
+    def __init__(self, callable_function, callable_function_deriv, dim_x, min_x, max_x, noise = {}):
         
         self.callable_function = callable_function
         self.callable_function_deriv = callable_function_deriv
         self.dim_x = dim_x
         self.min_x = min_x 
         self.max_x = max_x
+        self.noise = noise
 
     # training set: returns x, y and dx/dy
     def trainingSet(self, num_samples, seed = None):
@@ -682,7 +683,8 @@ class Generator :
                         function = self.callable_function, 
                         deriv_function = self.callable_function_deriv, 
                         dim_x = self.dim_x,
-                        min_x = self.min_x, max_x = self.max_x, num_samples = num_samples
+                        min_x = self.min_x, max_x = self.max_x, num_samples = num_samples,
+                        noise = self.noise
                 )
 
         X = np.array([bs[0] for bs in batch_samples])
@@ -699,7 +701,8 @@ class Generator :
                         function = self.callable_function, 
                         deriv_function = self.callable_function_deriv, 
                         dim_x = self.dim_x,
-                        min_x = self.min_x, max_x = self.max_x, num_samples = num_samples
+                        min_x = self.min_x, max_x = self.max_x, num_samples = num_samples,
+                        noise = self.noise
                 )
 
         X = np.array([bs[0] for bs in batch_samples])
